@@ -85,6 +85,8 @@ def auto_date_rule(label: str, fields: dict):
     return None
 
 
+KEY_DATES = ("갱신월", "제출기한")      # 공문마다 꼭 확인할 날짜 칸(빨간 * 표시)
+ROUND_DATES = ("검색결과통보일",)   # 차수를 넣으면 홈넷 기록물등록대장에서 찾아 채우는 날짜(입력칸 없음)
 AUTO_DATE_NOTES = {"안내문시행일": "작성일", "대상세대 갱신월": "검색월 13개월 전",
                    "재임대월": "갱신월 2개월 전"}   # 나머지는 갱신월 말일
 DATE_MONTH_AUTO = ("대상세대 갱신월", "재임대월")     # 달만 보이는 자동 날짜
@@ -151,9 +153,8 @@ class App:
         self.current: dtpl.Template | None = None
         self.date_widgets: dict[str, object] = {}
         self.edit_mode = False
-        self.roster: list[roster.Person] = []
-        self.roster_path = ""
-        self.roster_tree = None
+        # 예전 '엑셀 명단 불러오기'의 마지막 폴더. 수신자 엑셀을 고를 때 처음 열 폴더로만 쓴다
+        self.roster_path = self.cfg.get("roster_path", "")
         self.upload_path = ""      # 홈넷 수신자 [업로드]에 올릴 엑셀 (저장하지 않음 — 잘못 보내지 않도록)
         self.upload_count: int | None = None   # 그 엑셀의 수신자 수 → 서식의 {세대수}
         self.first_docs: dict[str, dtpl.Template] = {}   # 서식\1안 폴더의 내부결재 서식 (이름 → 서식)
@@ -214,9 +215,6 @@ class App:
         self._build_tab_write()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._drain)
-        last_roster = self.cfg.get("roster_path", "")
-        if last_roster and os.path.isfile(last_roster):   # 지난번 명단을 다시 불러 둔다
-            self._load_roster(last_roster, quiet=True)
         self._load_templates()
         # 처음 쓰는 사람은 계정·기본정보부터, 이미 입력했으면 바로 공문 작성으로
         if self.cfg.get("담당자") and self.cfg.get("단지명"):
@@ -225,7 +223,6 @@ class App:
         logo = os.path.join(paths.bundle_dir(), "assets", "logo.png")
         shortcuts = (("단지기본정보", "building", "blue", self._show_complex),
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
-                     ("명단 불러오기", "people", "green", self._pick_roster),
                      ("사용 방법", "help", "violet", self._show_help))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
@@ -276,7 +273,12 @@ class App:
         if getattr(self, "sidebar", None) is not None:
             self.sidebar.set_active(key)
         if key == "write":
-            self.header_title.config(text=f"공문 작성  ·  {self.area}")
+            self._set_write_title()
+
+    def _set_write_title(self):
+        """공문 작성 화면 맨 위 제목: 고른 서식 이름(예: 14. 갱신계약 입주자격심사 소명결과)."""
+        self.header_title.config(text=self.current.label if self.current is not None
+                                 else f"공문 작성  ·  {self.area}")
 
     def _go_home(self):
         if self.edit_mode:
@@ -387,7 +389,6 @@ class App:
         f.add_separator()
         f.add_command(label="서식 폴더 열기", command=lambda: os.startfile(paths.template_dir()))
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
-        f.add_command(label="수신인 명단(엑셀) 불러오기", command=self._pick_roster)
         f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
@@ -448,7 +449,6 @@ class App:
                 self._go_home()
                 return
             self.nb.select(1)
-            self.header_title.config(text=f"공문 작성  ·  {self.area}")
             self._nav("write")
         elif self.current is not None and self.current in self.templates:
             self._pick_template(self.templates.index(self.current))
@@ -644,9 +644,9 @@ class App:
         pane = ttk.PanedWindow(tab, orient="horizontal")
         pane.pack(fill="both", expand=True, padx=6, pady=6)
 
-        # 왼쪽: 서식 목록
-        left = ttk.LabelFrame(pane, text="1. 서식 고르기")
-        pane.add(left, weight=2)
+        # 서식 목록: 화면에는 보이지 않는다(서식은 왼쪽 메뉴 [서식 고르기] 화면에서 고른다).
+        # 고른 서식을 여는 일(_on_select)은 이 목록이 맡으므로 만들어만 둔다.
+        left = ttk.Frame(tab)
         sf = ttk.Frame(left)
         sf.pack(fill="x", padx=6, pady=(6, 2))
         ttk.Label(sf, text="🔍").pack(side="left")
@@ -666,8 +666,8 @@ class App:
         # 오른쪽: 입력 + 미리보기
         right = ttk.Frame(pane)
         pane.add(right, weight=5)
-        # 입력칸이 길어져도(2안·3안 …) 아래 '3. 확인하기'가 밀려나지 않게, 높이를 제한하고 스크롤한다
-        box = ttk.LabelFrame(right, text="2. 이름·날짜 넣기")
+        # 입력칸이 길어져도(2안·3안 …) 아래 '2. 확인하기'가 밀려나지 않게, 높이를 제한하고 스크롤한다
+        box = ttk.LabelFrame(right, text="1. 이름·날짜 넣기   (빨간 * 칸은 꼭 넣어 주세요)")
         box.pack(fill="x", padx=4, pady=(0, 6))
         bg = ttk.Style(self.root).lookup("TFrame", "background") or "#fafafa"
         self.inputs_canvas = cv = tk.Canvas(box, highlightthickness=0, bd=0, bg=bg, height=10)
@@ -680,7 +680,8 @@ class App:
 
         def fit(_e=None):
             need = self.inputs.winfo_reqheight()
-            limit = max(int(180 * self.k), int(right.winfo_height() * 0.55))
+            # 본문을 닫아 두면 입력칸이 더 길게 보여도 된다
+            limit = max(int(180 * self.k), int(right.winfo_height() * (0.55 if self.edit_mode else 0.8)))
             cv.configure(height=min(need, limit), scrollregion=(0, 0, 0, need))
             cv.itemconfigure(win, width=cv.winfo_width())
             if need > limit:
@@ -688,6 +689,7 @@ class App:
             else:
                 sb.pack_forget()
                 cv.yview_moveto(0)
+        self._fit_inputs = fit
         self.inputs.bind("<Configure>", fit)
         cv.bind("<Configure>", lambda _e: cv.itemconfigure(win, width=cv.winfo_width()))
         right.bind("<Configure>", fit, add="+")
@@ -698,8 +700,9 @@ class App:
         cv.bind("<Enter>", lambda _e: cv.bind_all("<MouseWheel>", wheel))
         cv.bind("<Leave>", lambda _e: cv.unbind_all("<MouseWheel>"))
 
-        pv = ttk.LabelFrame(right, text="3. 확인하기")
-        pv.pack(fill="both", expand=True, padx=4)
+        pv = ttk.LabelFrame(right, text="2. 확인하기")
+        pv.pack(fill="x", padx=4)
+        self.preview_box = pv
         top = ttk.Frame(pv)
         top.pack(fill="x", padx=6, pady=(6, 2))
         self.title_var = tk.StringVar()
@@ -716,15 +719,16 @@ class App:
         self.save_btn = ttk.Button(bar, text="고친 내용을 서식에 저장", command=self._save_template)
         self.mode_hint = ttk.Label(bar, foreground="#555", text="")
         self.mode_hint.pack(side="left", padx=8)
+        # 본문은 [✏ 본문 직접 고치기]를 눌렀을 때만 펼친다(_toggle_edit)
         self.preview = scrolledtext.ScrolledText(pv, wrap="word", font=("맑은 고딕", 10), **TEXT_OPTS)
-        self.preview.pack(fill="both", expand=True, padx=6, pady=4)
         self.preview.tag_configure("blank", foreground="#c62828", background="#fde8e8")
         self.preview.tag_configure("field", foreground=ACCENT, font=("맑은 고딕", 10, "bold"))
         self.preview.tag_configure("table", background="#f1f5fb", foreground="#333")
         self.preview.tag_raise("blank")
         self.warn_var = tk.StringVar()
-        ttk.Label(pv, textvariable=self.warn_var, style="Warn.TLabel", wraplength=int(700 * self.k),
-                  justify="left").pack(fill="x", padx=6, pady=(0, 6))
+        self.warn_label = ttk.Label(pv, textvariable=self.warn_var, style="Warn.TLabel",
+                                    wraplength=int(700 * self.k), justify="left")
+        self.warn_label.pack(fill="x", padx=6, pady=(0, 6))
 
     def _load_templates(self):
         folder = paths.template_dir()
@@ -784,6 +788,7 @@ class App:
         if self.edit_mode:
             self._toggle_edit()
         self.current = t
+        self._set_write_title()
         self._build_inputs()
         self._refresh()
 
@@ -913,6 +918,7 @@ class App:
         r = 0
         self.name_entry = self.addr_entry = None
         self.auto_label = None
+        self.required = []      # (이름표, 입력칸) — 꼭 넣어야 하는 칸. 비어 있으면 이름표가 빨갛다
 
         # 맨 위 따로 한 줄: 소명대상 없음 — 체크하면 안내문(선택안)을 모두 빼고 1안 제목 끝에 표시한다
         if t.none_label:
@@ -952,19 +958,33 @@ class App:
         docs = self._docs()
         uses = lambda key: any(d.uses(key) for d in docs)   # noqa: E731
         sender = next((d for d in docs if not d.internal), t)
-        if uses("이름"):
+        # 받는 분이 있는 안마다 수신자 엑셀을 골랐으면 수신자는 엑셀이 정하므로 이름·동호 칸을 숨긴다
+        # (내부결재 안에 이름·동호가 들어가면 그대로 둔다)
+        person = lambda d: d.uses("이름") or d.uses("주소")   # noqa: E731
+        to_people = [d for d in docs if not d.internal and person(d)]
+        by_excel = (bool(to_people) and all(self._upload_for(d) for d in to_people)
+                    and not any(d.internal and person(d) for d in docs))
+        if by_excel and (uses("이름") or uses("주소")):
+            ttk.Label(f, text="📎 수신자 엑셀로 보내므로 받는 분 이름·동호는 넣지 않습니다",
+                      foreground="#1a7f37").grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=4)
+            r += 1
+        if uses("이름") and not by_excel:
             label = sender.name_hint or ("받는 분 이름" if not sender.internal else "이름")
-            ttk.Label(f, text=label, font=FONT_B).grid(row=r, column=0, sticky="e", padx=8, pady=4)
-            self.name_entry = ttk.Entry(f, width=30)
-            self.name_entry.grid(row=r, column=1, sticky="w", padx=4)
+            lb = ttk.Label(f, text="* " + label, font=FONT_B)
+            lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
+            side = ttk.Frame(f)
+            side.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
+            self.name_entry = ttk.Entry(side, width=30)
+            self.required.append((lb, self.name_entry))
+            self.name_entry.pack(side="left")
             self.name_entry.insert(0, old_values.get("이름", ""))
             self.name_entry.bind("<KeyRelease>", lambda _e: self._refresh())
             if not self._overlay_shown():     # 처음 화면 검색칸 등에서 커서를 빼앗지 않게
                 self.name_entry.focus_set()
-            ttk.Label(f, text="여러 명이면 쉼표로 (예: 홍길동, 김철수)" if "상속인" in sender.receiver else "",
-                      foreground="#777").grid(row=r, column=2, columnspan=3, sticky="w")
+            ttk.Label(side, text="여러 명이면 쉼표로 (예: 홍길동, 김철수)" if "상속인" in sender.receiver else "",
+                      foreground="#777").pack(side="left", padx=8)
             r += 1
-        if uses("주소"):
+        if uses("주소") and not by_excel:
             ttk.Label(f, text="동·호 (주소)").grid(row=r, column=0, sticky="e", padx=8, pady=4)
             self.addr_entry = ttk.Entry(f, width=30)
             self.addr_entry.grid(row=r, column=1, sticky="w", padx=4)
@@ -982,10 +1002,19 @@ class App:
             fields += [fs for fs in d.date_fields() if fs[0] not in dict(fields)]
         # 자동으로 정하는 날짜는 입력칸을 만들지 않는다(만료일=갱신월 말일, 안내문시행일=작성일)
         self.auto_dates = [lb for lb, _ in fields if auto_date_rule(lb, dict(fields))]
-        fields = [fs for fs in fields if fs[0] not in self.auto_dates]
+        # 차수가 있는 서식의 검색결과통보일도 칸을 만들지 않는다: 차수의 결과 통보 문서 시행일로 채운다
+        has_round = any("차수" in d.input_fields() for d in docs)
+        self.found_labels = [lb for lb, _ in fields if lb in ROUND_DATES and has_round]
+        if not keep:
+            self.found = ("", {})
+        fields = [fs for fs in fields if fs[0] not in self.auto_dates + self.found_labels]
         for i, (label, style) in enumerate(fields):
             rr, cc = r + i // 2, (i % 2) * 3
-            ttk.Label(f, text=label).grid(row=rr, column=cc, sticky="e", padx=8, pady=4)
+            if label in KEY_DATES:    # 꼭 확인할 날짜: 처음 값이 들어 있어 비지 않으므로 늘 빨간 * 로 보인다
+                ttk.Label(f, text="* " + label, font=FONT_B, foreground="#c62828").grid(
+                    row=rr, column=cc, sticky="e", padx=8, pady=4)
+            else:
+                ttk.Label(f, text=label).grid(row=rr, column=cc, sticky="e", padx=8, pady=4)
             if is_month_field(label, style):
                 de = MonthEntry(f, command=self._refresh)
             else:
@@ -999,7 +1028,6 @@ class App:
             hint = "작성일부터 2주" if "기한" in label else ""
             ttk.Label(f, text=hint, foreground="#999").grid(row=rr, column=cc + 2, sticky="w")
             self.date_widgets[label] = de
-        self.roster_tree = None
         r += (len(fields) + 1) // 2
         # {입력:항목} 수기 입력 칸(두 칸씩 한 줄)
         self.text_widgets = {}
@@ -1011,8 +1039,8 @@ class App:
             tip = ("차수를 넣으면 자동 작성 때 [문서링크]에서 같은 차수의 '입주자격심사 결과'와 "
                    "같은 차수·월의 '소명 안내' 문서를 찾아 관련 문서번호 자리에 넣습니다")
         elif any(x.endswith("일") for x in inputs):
-            tip = ("차수를 넣으면 자동 작성 때 [문서링크]로 그 차수의 '주택소유 전산검색 결과 통보'를 넣습니다. "
-                   "[홈넷에서 찾기]는 자격검색요청일을 채워 줍니다. 날짜는 2026. 10. 25.처럼 적어 주세요"
+            tip = ("차수를 넣으면 자동 작성 때 [문서링크]로 그 차수의 '주택소유 전산검색 결과 통보'를 넣고, "
+                   "자격검색요청일도 그 문서에서 찾아 채웁니다. 날짜는 2026. 10. 25.처럼 적어 주세요"
                    if uses_link else "아래 날짜는 직접 적어 주세요 (예: 2026. 10. 25.)")
         else:
             tip = ""
@@ -1023,20 +1051,27 @@ class App:
             r += 1
         # 수기 입력 칸은 한 줄에 하나씩(이름 칸 아래 같은 열) — 버튼·안내가 옆 칸을 밀지 않게
         for label in inputs:
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="e", padx=8, pady=4)
+            lb = ttk.Label(f, text="* " + label, font=FONT_B)
+            lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
             box = ttk.Frame(f)
             box.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
             e = ttk.Entry(box, width=18)
+            self.required.append((lb, e))
             e.insert(0, old_values.get("입력:" + label, defaults.get(label, "")))
             e.pack(side="left")
             e.bind("<KeyRelease>", lambda _e: self._refresh())
             self.text_widgets[label] = e
-            if label == "차수" and ("자격검색요청일" in inputs or "검색결과통보일" in self.date_widgets):
+            if label == "차수" and ("자격검색요청일" in inputs or "검색결과통보일" in self.date_widgets
+                                  or self.found_labels):
                 # 차수를 넣으면 기록물등록대장에서 결과 통보 문서를 찾아 요청일·통보일을 채운다
-                ttk.Button(box, text="🔎 홈넷에서 찾기", command=self._lookup_round).pack(side="left", padx=6)
+                ttk.Label(box, text="숫자만 적고 Enter (예: 34) — 그 차수 공문을 홈넷에서 찾아 "
+                                    "관련 문서 링크와 날짜를 자동으로 넣습니다",
+                          foreground="#777").pack(side="left", padx=8)
                 e.bind("<Return>", lambda _e: self._lookup_round())
                 e.bind("<FocusOut>", lambda _e: self._lookup_round(auto=True))
                 self._looked_round = self._round()
+            elif label == "차수":
+                ttk.Label(box, text="숫자만 적어 주세요 (예: 34)", foreground="#777").pack(side="left", padx=8)
             elif kinds.get(label) == "금액":
                 ttk.Label(box, text="숫자만 (예: 113560 → 금113,560원(금일십일만…))",
                           foreground="#999").pack(side="left", padx=8)
@@ -1045,15 +1080,13 @@ class App:
             elif label.endswith("일"):
                 ttk.Label(box, text="예: 2026. 10. 8.", foreground="#999").pack(side="left", padx=8)
             r += 1
-        if self.auto_dates:
+        if self.auto_dates or self.found_labels:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
             self.auto_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
             r += 1
         if not sender.internal and not t.options:   # 선택안이 있으면 안마다 위에서 고른다
             self._build_upload_row(f, r)
             r += 1
-        if uses("이름"):
-            self._build_roster(f, r)
         if not uses("이름") and not uses("주소") and not fields and not inputs and not t.internal:
             ttk.Label(f, text="이 서식은 넣을 이름·날짜가 없습니다. 아래 본문을 확인하고 필요하면 직접 고쳐 주세요.",
                       foreground="#555").grid(row=0, column=0, padx=8, pady=8)
@@ -1130,9 +1163,13 @@ class App:
             if n.enforce_date:
                 fill["검색결과통보일"] = n.enforce_date     # 결과 통보 시행일
             self.log(f"  {n.title} — {n.doc_number}({dtpl.fmt_date(n.enforce_date, '일')})")
+            # 입력칸이 없는 날짜(검색결과통보일)는 이 차수 값으로 기억해 둔다
+            self.found = (raw, {lb: v for lb, v in fill.items() if lb in self.found_labels})
             for label, value in fill.items():
                 e = self.text_widgets.get(label)
-                if e is not None:
+                if label in self.found_labels:
+                    pass
+                elif e is not None:
                     e.delete(0, "end")
                     e.insert(0, dtpl.fmt_date(value, "일"))
                 elif label in self.date_widgets:
@@ -1143,7 +1180,9 @@ class App:
             self._refresh()
 
         def err(ex):
-            messagebox.showerror("찾지 못함", f"{ex}\n\n문서번호와 날짜를 직접 넣어 주세요.")
+            self._looked_round = ""     # 차수 칸에서 Enter를 다시 누르면 또 찾는다
+            messagebox.showerror("찾지 못함", f"{ex}\n\n차수를 확인하고 Enter로 다시 찾거나, "
+                                            "날짜를 [✏ 본문 직접 고치기]에서 직접 넣어 주세요.")
 
         self.run_bg(work, ok, err)
 
@@ -1156,7 +1195,7 @@ class App:
         ttk.Button(box, text="📎 업로드할 엑셀 고르기", command=self._pick_upload).pack(side="left")
         self.upload_label = ttk.Label(box)
         self.upload_label.pack(side="left", padx=8)
-        self.upload_clear = ttk.Button(box, text="빼기", command=lambda: self._set_upload(""))
+        self.upload_clear = ttk.Button(box, text="빼기", command=lambda: self._change_upload(""))
         self._set_upload(self.upload_path, refresh=False)
 
     def _pick_upload(self):
@@ -1165,8 +1204,14 @@ class App:
             initialdir=os.path.dirname(self.upload_path or self.roster_path) or os.path.expanduser("~\\Desktop"),
             filetypes=[("엑셀", "*.xlsx *.xls *.csv"), ("모든 파일", "*.*")])
         if path:
-            self._set_upload(path)
+            self._change_upload(path)
             self.log(f"수신자 업로드 엑셀: {path}")
+
+    def _change_upload(self, path: str):
+        """수신자 엑셀을 고르거나 뺀다. 받는 분 이름·동호 칸이 보일지 달라지므로 입력칸을 다시 그린다."""
+        self._set_upload(path, refresh=False)
+        self._build_inputs(keep=True)
+        self._refresh()
 
     def _set_upload(self, path: str, refresh: bool = True):
         if path != self.upload_path or (path and self.upload_count is None):
@@ -1194,86 +1239,6 @@ class App:
         if refresh:
             self._refresh()
 
-    # ---------- 수신인 명단(엑셀) ----------
-    def _build_roster(self, parent, row: int):
-        """엑셀 명단에서 한 명을 고르면 이름·동호 칸을 채운다."""
-        box = ttk.Frame(parent)
-        box.grid(row=row, column=0, columnspan=6, sticky="we", padx=8, pady=(6, 4))
-        bar = ttk.Frame(box)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="📂 엑셀 명단 불러오기", command=self._pick_roster).pack(side="left")
-        self.roster_info = ttk.Label(bar, foreground="#555")
-        self.roster_info.pack(side="left", padx=8)
-        self.roster_search = tk.StringVar()
-        ttk.Entry(bar, textvariable=self.roster_search, width=16).pack(side="right")
-        ttk.Label(bar, text="🔍").pack(side="right")
-        self.roster_search.trace_add("write", lambda *_: self._fill_roster())
-
-        tf = ttk.Frame(box)
-        tf.pack(fill="x", pady=(4, 0))
-        self.roster_tree = ttk.Treeview(tf, columns=("addr", "name"), show="headings",
-                                        selectmode="browse", height=5)
-        self.roster_tree.heading("addr", text="동·호")
-        self.roster_tree.heading("name", text="이름")
-        self.roster_tree.column("addr", width=int(160 * self.k), anchor="center")
-        self.roster_tree.column("name", width=int(160 * self.k), anchor="center")
-        ysb = ttk.Scrollbar(tf, orient="vertical", command=self.roster_tree.yview)
-        self.roster_tree.configure(yscrollcommand=ysb.set)
-        self.roster_tree.pack(side="left", fill="x", expand=True)
-        ysb.pack(side="right", fill="y")
-        self.roster_tree.bind("<<TreeviewSelect>>", self._on_pick_person)
-        self._fill_roster()
-
-    def _fill_roster(self):
-        tree = self.roster_tree
-        if tree is None:
-            return
-        tree.delete(*tree.get_children())
-        q = self.roster_search.get().strip()
-        for i, p in enumerate(self.roster):
-            if q and q not in p.name and q not in p.address:
-                continue
-            tree.insert("", "end", iid=str(i), values=(p.address, p.name))
-        if self.roster:
-            self.roster_info.config(text=f"{os.path.basename(self.roster_path)} · {len(self.roster)}명 "
-                                         "— 목록에서 받는 분을 누르세요")
-        else:
-            self.roster_info.config(text="첫 줄에 '이름', '동', '호'가 적힌 엑셀(.xlsx)을 불러오면 "
-                                         "목록에서 골라 넣을 수 있습니다")
-
-    def _pick_roster(self):
-        path = filedialog.askopenfilename(
-            title="수신인 명단 엑셀 고르기", parent=self.root,
-            initialdir=os.path.dirname(self.roster_path) or os.path.expanduser("~\\Desktop"),
-            filetypes=[("엑셀·CSV", "*.xlsx *.xlsm *.csv"), ("모든 파일", "*.*")])
-        if path:
-            self._load_roster(path)
-
-    def _load_roster(self, path: str, quiet: bool = False):
-        try:
-            people = roster.load(path)
-        except Exception as ex:
-            self.log(f"⚠️ 명단을 읽지 못했습니다 — {ex}")
-            if not quiet:
-                messagebox.showwarning("명단 불러오기", str(ex))
-            return
-        self.roster, self.roster_path = people, path
-        self.log(f"✅ 수신인 명단 {len(people)}명을 불러왔습니다. ({os.path.basename(path)})")
-        if self.roster_tree is not None:
-            self.roster_search.set("")
-            self._fill_roster()
-
-    def _on_pick_person(self, _=None):
-        sel = self.roster_tree.selection()
-        if not sel:
-            return
-        p = self.roster[int(sel[0])]
-        for entry, value in ((self.name_entry, p.name), (self.addr_entry, p.address)):
-            if entry is not None:
-                entry.delete(0, "end")
-                entry.insert(0, value)
-        self._refresh()
-
     def _values(self) -> tuple[dict, dict]:
         values = self._info_values()
         if self.name_entry is not None:
@@ -1294,6 +1259,9 @@ class App:
             v = auto_date_rule(label, dates)(dates, dt.date.today())
             if v:
                 dates[label] = v
+        found_round, found = getattr(self, "found", ("", {}))
+        if found_round and found_round == self._round():     # 차수를 바꾸면 예전 차수 날짜는 쓰지 않는다
+            dates.update({k: v for k, v in found.items() if k in getattr(self, "found_labels", [])})
         for key, link in self._link_specs(dates).items():
             values[key] = link.fallback
         return values, dates
@@ -1319,17 +1287,30 @@ class App:
         """작성할 안마다 (제목, 수신자, 본문)."""
         return [self._filled(d) for d in self._docs()]
 
+    def _mark_required(self):
+        """꼭 넣어야 하는 칸: 비어 있으면 이름표를 빨갛게, 채우면 원래 색으로."""
+        for lb, e in getattr(self, "required", []):
+            if lb.winfo_exists():
+                lb.config(foreground="#c62828" if not e.get().strip() else BROWN)
+
     def _refresh(self):
-        if self.current is None or self.edit_mode:
+        if self.current is None:
+            return
+        self._mark_required()
+        if self.edit_mode:
             return
         filled = self._all_filled()
         title, receiver, body = filled[0]
-        if getattr(self, "auto_dates", None) and getattr(self, "auto_label", None) is not None:
+        if getattr(self, "auto_label", None) is not None:
             _, dates = self._values()
-            self.auto_label.config(text="자동: " + ",  ".join(
-                f"{lb} {dtpl.fmt_date(dates[lb], '년월' if lb in DATE_MONTH_AUTO else '일')}"
-                f" ({AUTO_DATE_NOTES.get(lb, '갱신월 말일')})"
-                for lb in self.auto_dates if lb in dates))
+            n = self._round()
+            parts = [f"{lb} {dtpl.fmt_date(dates[lb], '년월' if lb in DATE_MONTH_AUTO else '일')}"
+                     f" ({AUTO_DATE_NOTES.get(lb, '갱신월 말일')})"
+                     for lb in self.auto_dates if lb in dates]
+            parts += [f"{lb} {dtpl.fmt_date(dates[lb], '일')} ({n}차 결과 통보 문서 날짜)" if lb in dates
+                      else f"{lb}: 차수를 넣고 Enter를 누르면 홈넷에서 찾아 넣습니다"
+                      for lb in self.found_labels]
+            self.auto_label.config(text="자동: " + ",  ".join(parts))
         more = len(filled) - 1
         self.title_var.set(title + (f"   (+ {'2안' if more == 1 else f'2안～{more + 1}안'})" if more else ""))
         self.recv_var.set(receiver)
@@ -1370,6 +1351,9 @@ class App:
         t = self.current
         if not self.edit_mode:
             self.edit_mode = True
+            self.preview_box.pack_configure(fill="both", expand=True)
+            self.preview.pack(fill="both", expand=True, padx=6, pady=4, before=self.warn_label)
+            self._fit_inputs()
             self.preview.config(state="normal")
             self.preview.delete("1.0", "end")
             self.preview.insert("1.0", t.body)
@@ -1382,7 +1366,7 @@ class App:
                 end = f"{pos}+{cnt.get()}c"
                 self.preview.tag_add("field", pos, end)
                 start = end
-            self.mode_btn.config(text="✔ 고치기 끝 (미리보기로)")
+            self.mode_btn.config(text="✔ 고치기 끝 (본문 닫기)")
             self.save_btn.pack(side="left", padx=6, after=self.mode_btn)
             self.mode_hint.config(text="파란 글씨 { } 는 위에 넣은 이름·날짜로 바뀌는 자리입니다. "
                                        "표는 | 로 칸을 나눕니다.")
@@ -1391,6 +1375,9 @@ class App:
             self.edit_mode = False
             self.mode_btn.config(text="✏ 본문 직접 고치기")
             self.save_btn.pack_forget()
+            self.preview.pack_forget()
+            self.preview_box.pack_configure(fill="x", expand=False)
+            self._fit_inputs()
             self._refresh()
             self.mode_hint.config(text="고친 내용은 이번 작성에 쓰입니다. 계속 쓰려면 [고친 내용을 서식에 저장].")
 
@@ -1441,7 +1428,7 @@ class App:
 
     def _create_draft(self):
         if self.current is None:
-            messagebox.showinfo("서식 선택", "왼쪽에서 서식을 먼저 골라 주세요.")
+            messagebox.showinfo("서식 선택", "[서식 고르기]에서 서식을 먼저 골라 주세요.")
             return
         self._current_body()
         docs = self._docs()
@@ -1470,6 +1457,16 @@ class App:
             messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self.nb.select(0)
             return
+        if self.found_labels and self.found[0] != self._round():
+            # 검색결과통보일은 차수의 결과 통보 문서에서 가져오므로 먼저 찾는다
+            if not self._round():
+                messagebox.showwarning("차수 필요", "차수를 숫자로 넣어 주세요. 예: 34")
+                self.text_widgets["차수"].focus_set()
+                return
+            messagebox.showinfo("날짜 찾기", f"{self._round()}차 결과 통보 문서의 날짜를 홈넷에서 찾습니다.\n"
+                                           "다 찾으면 [홈넷에 자동 작성]을 한 번 더 눌러 주세요.")
+            self._lookup_round()
+            return
         try:
             parts = []
             dates = self._values()[1]
@@ -1477,7 +1474,8 @@ class App:
                 links = self._doc_links(d, dates)
                 for link in links:      # 관련 문서번호 자리는 홈넷 [문서링크]로 넣는다
                     b = b.replace(link.fallback, link.mark, 1)
-                parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b), up, doc_links=links))
+                parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b, hwp=True), up,
+                                                    doc_links=links))
         except ValueError as ex:
             messagebox.showwarning("확인", str(ex))
             return
@@ -1652,11 +1650,11 @@ class App:
             "처음 한 번\n"
             "  ① 계정·기본정보에 홈넷 계정(밖에서는 VPN 계정도)과 관리소 정보를 넣고 [저장하고 다음].\n\n"
             "공문 쓸 때마다\n"
-            "  1. 왼쪽에서 서식을 고릅니다(🔍로 검색 가능).\n"
-            "  2. 받는 분 이름과 날짜를 넣습니다. 날짜 칸 ▼를 누르면 달력이 나옵니다.\n"
-            "     [📂 엑셀 명단 불러오기]로 명단을 올리면 목록에서 눌러 이름·동호를 넣을 수 있습니다.\n"
-            "     (엑셀 첫 줄에 '이름', '동', '호' — 성명·계약자명, 동호 한 칸도 됩니다)\n"
-            "  3. 아래 미리보기를 확인합니다. 빨간 표시는 아직 채우지 않은 칸입니다.\n"
+            "  1. 왼쪽 메뉴 [서식 고르기]에서 서식을 고릅니다(🔍로 검색 가능).\n"
+            "  2. 받는 분 이름과 날짜를 넣습니다. 빨간 * 표시는 꼭 넣어야 하는 칸입니다.\n"
+            "     날짜 칸 ▼를 누르면 달력이 나옵니다.\n"
+            "     여러 명에게 보낼 때는 [📎 업로드할 엑셀 고르기]로 수신자 엑셀을 고릅니다.\n"
+            "  3. 아래 확인하기에서 제목·수신자를 봅니다. 본문은 [✏ 본문 직접 고치기]를 누르면 열립니다.\n"
             "  4. [홈넷에 자동 작성]을 누르면 브라우저가 열리고\n"
             "     전자결재 → 문서작성 → 표준기안문에 제목·수신자·본문을 넣습니다.\n"
             "  5. 브라우저에서 내용을 확인하고 [결재올림]은 직접 누릅니다.\n\n"

@@ -682,7 +682,99 @@ def insert_body(driver, draft_handle: str, body_html: str, log, subcase: int = 0
     log(f"✅ 본문 입력 ('{target}' 위치)")
     if (info.get("endsAfterTrim") or info.get("ends") or 0) > 1:
         log("⚠️ 본문 끝에 '끝.'이 2개 남았습니다. 아래쪽 '끝.'을 직접 지워 주세요.")
+    _enter_hwp_frame(driver)
+    try:
+        apply_para_marks(driver, body_html, log)
+        apply_tab_marks(driver, body_html, log, target)
+    finally:
+        driver.switch_to.default_content()
     return True
+
+
+_JS_FIELD_HAS = r"""
+try { return String(window.HwpCtrl.GetFieldText(arguments[0]) || '').indexOf(arguments[1]) >= 0; }
+catch (e) { return null; }
+"""
+
+
+def apply_tab_marks(driver, body_html: str, log, field: str) -> None:
+    """붙임 줄의 탭 표식을 진짜 탭으로 바꾼다(1. 2. 3.이 같은 탭 위치에 온다).
+    탭 글자로 바꿔 보고, 남아 있으면 한글의 탭 기호 ^t로, 그래도 남으면 빈칸으로 바꾼다."""
+    import doc_template as dtpl
+    mark = dtpl.TAB_MARK
+    if mark not in body_html:
+        return
+    for repl in ("\t", "^t"):
+        driver.execute_script(_JS_REPLACE_MARK, mark, repl)
+        left = driver.execute_script(_JS_FIELD_HAS, field, mark)
+        if left is False:
+            log("✅ 붙임 탭 맞춤")
+            return
+        if left is None:          # 본문 글을 읽지 못해 확인할 수 없다 — 탭 글자로 바꾼 것으로 둔다
+            log("✅ 붙임 탭 맞춤(확인 못 함 — 붙임 열을 한번 봐 주세요)")
+            return
+    driver.execute_script(_JS_REPLACE_MARK, mark, "    ")
+    log("⚠️ 붙임 탭을 넣지 못해 빈칸으로 띄웠습니다. 2. 3. 앞에서 Tab을 눌러 맞춰 주세요.")
+
+
+# ---------------- 3-1. 문단 여백(내어쓰기) ----------------
+# 웹한글은 HTML의 margin-left·text-indent를 제대로 옮기지 못하므로(doc_template.PARA_MARK_RE 참고)
+# 본문 문단 앞의 표식 【문단:왼쪽여백:내어쓰기】를 찾아 그 문단에 [문단 모양]을 주고, 표식은 모두 바꾸기로 지운다.
+# 선택한 글자를 지우지 않으므로 찾기가 엇나가도 본문이 지워지지 않는다.
+
+_JS_PARA_MARKS = r"""
+var h = window.HwpCtrl, marks = arguments[0], out = {per: {}, errs: []};
+function pos() { try { return JSON.stringify(h.GetSelectedPos ? h.GetSelectedPos() : h.GetPos()); } catch (e) { return ''; } }
+for (var k = 0; k < marks.length; k++) {
+  var mk = marks[k][0], left = marks[k][1], ind = marks[k][2], n = 0, last = null;
+  try {
+    h.MovePos(2);                                   // 문서 처음부터 앞으로 찾는다
+    for (var i = 0; i < 400; i++) {
+      var f = h.CreateAction('RepeatFind'), fs = f.CreateSet(); f.GetDefault(fs);
+      fs.SetItem('FindString', mk); fs.SetItem('IgnoreMessage', 1); fs.SetItem('Direction', 0);
+      var r = f.Execute(fs);
+      if (!r || String(r) === 'false' || String(r) === '0') break;
+      var p = pos();
+      if (p && p === last) break;                   // 더 찾지 못하고 같은 자리에 머문다
+      last = p;
+      var a = h.CreateAction('ParagraphShape'), s = a.CreateSet(); a.GetDefault(s);
+      s.SetItem('LeftMargin', left); s.SetItem('Indentation', ind);
+      a.Execute(s);
+      n++;
+    }
+  } catch (e) { out.errs.push(mk + ' ' + e); }
+  out.per[mk] = n;
+}
+return JSON.stringify(out);
+"""
+
+
+def apply_para_marks(driver, body_html: str, log) -> None:
+    """본문의 문단 표식마다 [문단 모양](왼쪽 여백·내어쓰기)을 주고 표식을 지운다.
+    문단 모양을 다 주지 못한 표식은 예전처럼 빈칸으로 바꿔 첫 줄 들여쓰기만이라도 살린다."""
+    from collections import Counter
+    import doc_template as dtpl
+    counts = Counter(m.group(0) for m in dtpl.PARA_MARK_RE.finditer(body_html))
+    if not counts:
+        return
+    marks = [[mk, int(m.group(1)), int(m.group(2))]
+             for mk in counts for m in [dtpl.PARA_MARK_RE.fullmatch(mk)]]
+    try:
+        res = json.loads(driver.execute_script(_JS_PARA_MARKS, marks) or "{}")
+    except Exception as ex:
+        res = {"per": {}, "errs": [str(ex)]}
+    per = res.get("per", {})
+    short = 0
+    for mk, left, _ind in marks:
+        ok = per.get(mk, 0) >= counts[mk] and not res.get("errs")
+        # 빈칸 하나 = 반각(6.5pt). 1pt = 100 HWPUNIT
+        fallback = "" if ok else " " * round(left / 650)
+        short += 0 if ok else counts[mk]
+        driver.execute_script(_JS_REPLACE_MARK, mk, fallback)
+    if short:
+        log(f"⚠️ 문단 {short}곳의 내어쓰기를 넣지 못해 빈칸으로 들여 썼습니다. {res.get('errs', '')}")
+    else:
+        log(f"✅ 문단 여백(내어쓰기) {sum(counts.values())}곳")
 
 
 # ---------------- 4. 문서링크 ----------------

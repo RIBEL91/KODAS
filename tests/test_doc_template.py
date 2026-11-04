@@ -2,6 +2,8 @@ import datetime as dt
 import os
 import re
 
+import pytest
+
 import doc_template as dtpl
 import paths
 
@@ -46,8 +48,62 @@ def test_table_spans_and_header():
     assert html.count("<table") == 1
     assert 'colspan="2"' in html and 'rowspan="2"' in html
     assert html.count("bgcolor=\"#e8e8e8\"") == 2      # 머리글 2칸(구분, 내용)
-    assert "&nbsp;&nbsp;가. 표" in html
-    assert html.index("붙임") > html.index("</table>")
+    # '  가. 표'는 빈칸 대신 내어쓰기: 첫 줄은 한글 1자(13pt)에서, 둘째 줄은 '가. ' 실제 너비만큼 더 들어가서
+    first, rest = _starts(html)[0]
+    assert first == pytest.approx(13, abs=0.01) and rest == pytest.approx(13 + dtpl._width_pt("가. "), abs=0.01)
+    assert ">가. 표<" in html and html.index("붙임") > html.index("</table>")
+
+
+def _starts(html):
+    """미리보기 HTML의 문단마다 (첫 줄 시작, 둘째 줄 시작) pt."""
+    out = []
+    for m in re.finditer(r"margin-left:([\d.]+)pt;text-indent:(-?[\d.]+)pt;", html):
+        left, ind = float(m.group(1)), float(m.group(2))
+        out.append((left + ind, left))
+    return out
+
+
+def test_wrapped_lines_hang_under_item_text():
+    """두 줄이 넘는 항목은 둘째 줄이 항목 기호 뒤 글자에 맞춰 시작한다(표준 공문 내어쓰기)."""
+    html = dtpl.to_html("1. 첫째 항목\n  가. 둘째\n    1) 셋째\n붙임  1. 서류 1부.\n      2. 서류 1부.\n"
+                        "      3. 서류 1부.  끝.\n본문")
+    w = dtpl._width_pt
+    one, ga, sub, att1, att2, att3 = _starts(html)
+    assert one == pytest.approx((0, w("1. ")), abs=0.01)                 # 1. → 둘째 줄은 '1. ' 뒤
+    assert ga == pytest.approx((13, 13 + w("가. ")), abs=0.01)           # 빈칸 2개 = 한글 1자(2타)
+    assert sub == pytest.approx((26, 26 + w("1) ")), abs=0.01)
+    # 붙임: 2. 3.은 '붙임  ' 실제 너비에서 시작해 1.과 같은 열, 둘째 줄도 같은 열
+    gap = "붙임" + " " * dtpl.ATTACH_GAP                # 붙임 뒤 간격은 빈칸 ATTACH_GAP개로 고정
+    assert att1 == pytest.approx((0, w(gap + "1. ")), abs=0.01)
+    assert att2[0] == pytest.approx(w(gap), abs=0.01) and att2 == pytest.approx(att3, abs=0.01)
+    assert att2[1] == pytest.approx(att1[1], abs=0.01)
+    last = html.split("<p ")[-1]
+    assert "margin-left" not in last and "line-height:160%" in last  # 기호 없는 줄은 들여쓰지 않는다
+
+
+def test_gulim_widths_are_real_font_widths():
+    """빈칸·숫자·마침표는 굴림 실제 너비(한글의 절반이 아님). 붙임  1.의 열이 어긋나던 원인."""
+    assert dtpl._width_pt(" ") == pytest.approx(13 * 341 / 1024, abs=0.01)
+    assert dtpl._width_pt("1.") == pytest.approx(13 * (588 + 342) / 1024, abs=0.01)
+    assert dtpl._width_pt("가") == 13
+
+
+def test_hwp_html_uses_para_marks_not_css_margins():
+    """웹한글용 HTML: 여백 CSS 없이 문단 앞 표식 【문단:왼쪽여백:내어쓰기】(HWPUNIT)만 넣는다."""
+    body = ("1. 첫째\n  가. 둘째\n| 구분 | 내용 |\n|---|\n| 기본 | □ 건물등기사항증명서(건물등기부등본) 길게 길게<br>  * 미등기 |\n"
+            "붙임  1. 가 1부.\n      2. 나 1부.  끝.\n본문")
+    html = dtpl.to_html(body, hwp=True)
+    assert "margin-left" not in html and "text-indent" not in html
+    hu = lambda pt: round(pt * 100)  # noqa: E731
+    w = dtpl._width_pt
+    assert f"【문단:0:-{hu(w('1. '))}】1. 첫째" in html
+    assert f"【문단:1300:-{hu(w('가. '))}】가. 둘째" in html
+    assert f"【문단:1100:-{hu(w('* ', 11))}】* 미등기" in html      # 표 칸(11pt)
+    # 붙임: '붙임' 뒤와 2. 앞에 탭 표식(본문을 넣은 뒤 진짜 탭으로 바꾼다) → 1. 2.가 같은 탭 위치
+    assert ">붙임【탭】1. 가 1부.<" in html and ">【탭】2. 나 1부. &nbsp;끝.<" in html
+    assert ">본문<" in html                                   # 기호·들여쓰기 없는 줄은 표식 없음
+    marks = dtpl.PARA_MARK_RE.findall(html)
+    assert len(marks) == 4                                     # 붙임 줄에는 문단 표식을 넣지 않는다
 
 
 def test_bundled_templates_all_render():

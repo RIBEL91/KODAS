@@ -518,13 +518,101 @@ def _font(pt: int) -> str:
     return f"font-family:'{FONT_FAMILY}',Gulim;font-size:{pt}pt;"
 
 
-def _p(text_html: str, align: str = "justify", pt: int = FONT_PT) -> str:
+LINE_HEIGHT = "160%"   # 공문 본문 줄 간격. 모든 문단에 같게 주어 누름틀 첫 문단만 벌어지지 않게 한다
+CELL_LINE_HEIGHT = "130%"   # 표 칸 안 줄 간격
+
+
+def _p(text_html: str, align: str = "justify", pt: int = FONT_PT, left: float = 0, first: float = 0,
+       lh: str = LINE_HEIGHT, pre: bool = False) -> str:
+    """문단 하나. left: 왼쪽 여백(pt), first: 첫 줄 들여쓰기(pt, 음수면 내어쓰기).
+    pre: 빈칸을 &nbsp; 대신 그대로 살린다(브라우저 미리보기 — 굴림 &nbsp;은 빈칸보다 넓다)."""
     f = _font(pt)
-    return (f'<p align="{align}" style="text-align:{align};margin:0;{f}">'
+    indent = (f"margin-left:{left:g}pt;text-indent:{first:g}pt;" if left or first else "")
+    ws = "white-space:pre-wrap;" if pre else ""
+    return (f'<p align="{align}" style="text-align:{align};margin-top:0;margin-bottom:0;'
+            f'margin-right:0;{indent}{ws}line-height:{lh};{f}">'
             f'<span style="{f}"><font face="{FONT_FAMILY}">{text_html}</font></span></p>')
 
 
 _BLANK = _p("&nbsp;", "left")
+
+# 공문 항목 기호(1. 가. 1) 가) (1) (가) ① ㉮)와 글머리(- * ※ □ ○ …), '붙임  1.'
+_MARK_RE = re.compile(
+    r"(?:붙임 +(?:\d+\. +)?"
+    r"|(?:\d+\.|[가-하]\.|\d+\)|[가-하]\)|\(\d+\)|\([가-하]\)|[①-⑳]|[㉮-㉻])(?: +|$)"
+    r"|(?:[-*※□■○◦ㅇ•▶]|\*+)(?: +|$))")
+
+
+_GULIM = {  # 굴림 글자 너비(1/1024 em, C:\Windows\Fonts\gulim.ttc에서 읽음). 없는 글자는 전각 1024, 반각 512로 본다
+    ' ': 341, '!': 341, '"': 384, '#': 768, '$': 612, '%': 896, '&': 704, "'": 290, '(': 384, ')': 384,
+    '*': 512, '+': 640, ',': 342, '-': 640, '.': 342, '/': 427, '0': 588, '1': 588, '2': 588, '3': 588,
+    '4': 588, '5': 588, '6': 588, '7': 588, '8': 588, '9': 588, ':': 342, ';': 342, '<': 640, '=': 640,
+    '>': 640, '?': 555, '@': 1024, 'A': 661, 'B': 693, 'C': 735, 'D': 739, 'E': 640, 'F': 610, 'G': 788,
+    'H': 748, 'I': 276, 'J': 512, 'K': 650, 'L': 556, 'M': 832, 'N': 716, 'O': 788, 'P': 652, 'Q': 792,
+    'R': 682, 'S': 648, 'T': 596, 'U': 728, 'V': 614, 'W': 916, 'X': 640, 'Y': 640, 'Z': 640, '[': 512,
+    '\\': 939, ']': 512, '^': 555, '_': 512, '`': 341, 'a': 576, 'b': 620, 'c': 586, 'd': 620, 'e': 581,
+    'f': 350, 'g': 620, 'h': 585, 'i': 247, 'j': 247, 'k': 512, 'l': 237, 'm': 882, 'n': 594, 'o': 620,
+    'p': 620, 'q': 620, 'r': 341, 's': 538, 't': 321, 'u': 584, 'v': 512, 'w': 768, 'x': 512, 'y': 512,
+    'z': 512, '{': 512, '|': 512, '}': 512, '~': 811, '□': 911, '■': 911, '○': 1024, '◦': 384, '●': 1024,
+    '•': 384, '▶': 1024, '※': 1024, '·': 384, 'ㆍ': 1024, '‘': 341, '’': 341, '“': 512, '”': 512,
+    '\u00a0': 341,     # &nbsp; = 빈칸과 같은 너비
+}
+
+
+def _wide(ch: str) -> bool:
+    o = ord(ch)
+    return (0x1100 <= o <= 0x11FF or 0x2460 <= o <= 0x24FF or 0x25A0 <= o <= 0x25FF or o == 0x203B
+            or 0x2E80 <= o <= 0xA4CF or 0xAC00 <= o <= 0xD7A3 or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFF60)
+
+
+def _char_pt(ch: str, pt: float = FONT_PT) -> float:
+    """굴림에서 글자 한 자의 실제 너비(pt). 빈칸은 한글의 1/3쯤, 숫자는 0.57쯤이다."""
+    return pt * _GULIM.get(ch, 1024 if _wide(ch) else 512) / 1024
+
+
+def _width_pt(s: str, pt: float = FONT_PT) -> float:
+    return sum(_char_pt(c, pt) for c in s)
+
+
+def _lead_pt(lead: str, pt: float = FONT_PT) -> float:
+    """줄 앞 들여쓰기: 공문 규칙대로 빈칸 2개 = 한글 1자(2타)로 본다(실제 빈칸 너비가 아니라)."""
+    return len(lead) * pt / 2
+
+
+def _units(s: str) -> int:
+    """고정폭으로 본 글자 칸 수(한글 2, 반각 1). 서식 txt에서 빈칸으로 맞춘 열을 찾을 때 쓴다."""
+    return sum(2 if _wide(c) else 1 for c in s)
+
+
+# 웹한글(HwpCtrl)은 HTML의 margin-left·text-indent를 제대로 옮기지 못한다(한글 2020으로 확인:
+# 들여쓰기는 2배가 되고 왼쪽 여백은 음수가 되기도 한다). 그래서 웹한글로 보낼 HTML에는 여백을 쓰지 않고
+# 문단 맨 앞에 이 표식을 넣는다. 본문을 넣은 뒤 표식마다 [문단 모양]으로 여백을 주고 표식은 지운다
+# (homnet_draft.apply_para_marks). 값은 HWPUNIT(1pt = 100).
+PARA_MARK_RE = re.compile(r"【문단:(\d+):(-?\d+)】")   # 【】는 완성형(KS X 1001)에도 있어 어디서나 깨지지 않는다
+
+
+def para_mark(left_pt: float, indent_pt: float) -> str:
+    """한글 문단 모양: 첫 줄은 왼쪽 여백에서, 나머지 줄은 |내어쓰기|만큼 더 들어가서 시작한다."""
+    return f"【문단:{round(left_pt * 100)}:{round(indent_pt * 100)}】"
+
+
+def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = False,
+            lead_w: float | None = None) -> str:
+    """본문(또는 표 칸) 한 줄. 둘째 줄부터는 항목 기호 뒤 글자에 맞춰 줄이 바뀌게(내어쓰기) 한다.
+    예) '  가. 무주택 …'  → 왼쪽 여백 = '  ' (한글 1자), 첫 줄 뒤 줄은 '가. ' 실제 너비만큼 더 들어간다.
+    lead_w: 들여쓰기 너비를 직접 줄 때(붙임 둘째 줄을 '붙임  ' 뒤 열에 맞출 때).
+    hwp=True면 여백 대신 문단 앞에 para_mark 표식을 넣는다(웹한글용)."""
+    stripped = line.lstrip(" ")
+    lead = line[:len(line) - len(stripped)]
+    m = _MARK_RE.match(stripped)
+    head = m.group(0) if m else ""
+    lead_w = _lead_pt(lead, pt) if lead_w is None else lead_w
+    head_w = _width_pt(head, pt)
+    if hwp:
+        # 웹한글은 &nbsp;를 보통 빈칸으로 바꿔 넣는다(한글 2020으로 확인) → 너비 계산과 맞는다
+        mark = para_mark(lead_w, -head_w) if lead_w or head_w else ""
+        return _p(mark + (_line_html(stripped) or "&nbsp;"), "left", pt, lh=lh)
+    return _p(escape(stripped) or "&nbsp;", "left", pt, left=lead_w + head_w, first=-head_w, lh=lh, pre=True)
 
 
 def _line_html(line: str) -> str:
@@ -550,7 +638,7 @@ def _is_sep(line: str) -> bool:
     return bool(re.fullmatch(r"\|\s*-{3,}\s*\|?", line.strip()))
 
 
-def _table(lines: list[str]) -> str:
+def _table(lines: list[str], hwp: bool = False) -> str:
     header_rows = 1
     rows: list[list[str]] = []
     for ln in lines:
@@ -578,7 +666,8 @@ def _table(lines: list[str]) -> str:
            f'width="{sum(widths)}pt" style="border-collapse:collapse;margin:0 auto;'
            f'width:{sum(widths)}pt;">']
     # 칸이 많은 표는 글자를 줄여 한 화면에 깔끔하게 들어가게 한다
-    f = _font(TABLE_PT if ncol <= 6 else 9 if ncol <= 9 else 8)
+    pt = TABLE_PT if ncol <= 6 else 9 if ncol <= 9 else 8
+    f = _font(pt)
     for ri, r in enumerate(rows):
         head = ri < header_rows
         out.append("<tr>")
@@ -595,33 +684,64 @@ def _table(lines: list[str]) -> str:
             longest = max((len(x.strip()) for x in parts), default=0)
             align = "center" if head or (longest <= 16 and len(parts) <= 3) else "left"
             w = sum(widths[c:c + colspan])
-            inner = "<br>".join(f'<span style="{f}"><font face="{FONT_FAMILY}">'
-                                f'{_line_html(x) or "&nbsp;"}</font></span>' for x in parts)
             bg = 'bgcolor="#e8e8e8" ' if head else ""
             bgs = "background:#e8e8e8;font-weight:bold;" if head else ""
             span_attr = (f' colspan="{colspan}"' if colspan > 1 else "") + \
                         (f' rowspan="{rowspan}"' if rowspan > 1 else "")
+            if align == "left":
+                # 왼쪽 정렬 칸은 줄마다 문단으로: 넘치는 줄이 □·*·- 기호 뒤 글자에 맞춰 바뀐다
+                body = "".join(_body_p(x, pt, CELL_LINE_HEIGHT, hwp) for x in parts)
+            else:
+                inner = "<br>".join(f'<span style="{f}"><font face="{FONT_FAMILY}">'
+                                    f'{_line_html(x) or "&nbsp;"}</font></span>' for x in parts)
+                body = f'<p align="{align}" style="text-align:{align};margin:0;{f}">{inner}</p>'
             out.append(
                 f'<td{span_attr} align="{align}" valign="middle" width="{w}pt" {bg}'
                 f'style="width:{w}pt;text-align:{align};vertical-align:middle;'
-                f'border:1px solid #000;padding:3pt 3pt;{bgs}{f}">'
-                f'<p align="{align}" style="text-align:{align};margin:0;{f}">{inner}</p></td>')
+                f'border:1px solid #000;padding:3pt 3pt;{bgs}{f}">{body}</td>')
         out.append("</tr>")
     out.append("</table>")
     return f'<div align="center" style="text-align:center;">{"".join(out)}</div>'
 
 
-def to_html(body: str) -> str:
-    """채운 본문 텍스트를 웹한글에 넣을 HTML로 바꾼다."""
+ATTACH_GAP = 4    # 미리보기에서 '붙임' 뒤 빈칸 수: 굴림 빈칸 4개 ≈ 한글 1.33자
+# 웹한글용 HTML의 탭 자리. HTML로는 탭이 빈칸이 되므로 본문을 넣은 뒤 찾아 바꾸기로 탭으로 바꾼다
+# (homnet_draft.apply_tab_marks). 【】는 완성형에도 있어 깨지지 않는다
+TAB_MARK = "【탭】"
+
+
+def to_html(body: str, hwp: bool = False) -> str:
+    """채운 본문 텍스트를 HTML로 바꾼다. hwp=True면 웹한글에 넣을 HTML(여백 대신 para_mark 표식)."""
     html, table = [], []
+    attach = None      # (칸 수, 실제 너비) — 바로 위 '붙임  '
     for line in body.split("\n") + [""]:
         if line.strip().startswith("|"):
             table.append(line)
             continue
         if table:
-            html.append(_table(table))
+            html.append(_table(table, hwp))
             table = []
-        html.append(_p(_line_html(line), "left") if line.strip() else _BLANK)
+        # 붙임 둘째 줄부터('      2. …')는 서식 txt에서 빈칸으로 '붙임  ' 뒤 열에 맞춰 둔 것이므로
+        # 빈칸 수 대신 '붙임  '의 실제 너비로 들여 써서 1. 2. 3.이 같은 열에 오게 한다
+        m = re.match(r"붙임 +", line)
+        if m:
+            units = _units(m.group(0))
+            if hwp:
+                # 웹한글: '붙임' 뒤와 2. 3. 앞에 탭을 넣어 같은 탭 위치에 맞춘다(글꼴·빈칸 너비와 상관없다)
+                html.append(_p("붙임" + TAB_MARK + _line_html(line[m.end():]), "left"))
+                attach = (units, 0)
+                continue
+            # 미리보기: '붙임'과 1. 사이는 늘 빈칸 ATTACH_GAP개(굴림 빈칸은 좁아 서식의 두 칸으로는 붙어 보인다)
+            line = "붙임" + " " * ATTACH_GAP + line[m.end():]
+            attach = (units, _width_pt("붙임" + " " * ATTACH_GAP))
+        elif not line.startswith(" "):
+            attach = None
+        lead = len(line) - len(line.lstrip(" "))
+        lead_w = attach[1] if attach and lead == attach[0] and line.strip() else None
+        if hwp and lead_w is not None:
+            html.append(_p(TAB_MARK + _line_html(line.strip()), "left"))
+            continue
+        html.append(_body_p(line, hwp=hwp, lead_w=lead_w) if line.strip() else _BLANK)
     while html and html[-1] == _BLANK:
         html.pop()
     return "".join(html)
