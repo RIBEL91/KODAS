@@ -17,6 +17,10 @@ XPATH_LOGIN_BTN = '/html/body/div[1]/div/div/form/div/div[5]/button'
 SEL_DUP_CONTINUE = "#nextGoBt"     # '다른 ip로 접속되어 있습니다' → 계속
 SEL_PW_EXPIRED_OK = "#okBt"        # '비밀번호를 수정한지 90일이 넘어' 변경 창
 
+# 기안 창·결재정보 창·대장 문서 창 등 '작업용 새 창'의 주소 조각 (이 창들은 홈넷 본 창이 아니다)
+WORK_WINDOW_PARTS = ("formfolder_dochandler", "nsancdocinfodlg", "nsanclinedlg",
+                     "spo_select_arrange_binder", "dochandler", "relate", "docinfo")
+
 
 class LoginError(Exception):
     """사용자에게 그대로 보여줄 수 있는 로그인 실패 사유."""
@@ -75,6 +79,22 @@ def driver_alive(driver) -> bool:
         return bool(driver.window_handles)
     except Exception:
         return False
+
+
+def main_window(driver) -> str:
+    """홈넷 본 창의 핸들. 기안·결재정보·대장 문서 창이 남아 있어도 본 창을 찾는다."""
+    handles = list(driver.window_handles)
+    for h in handles:
+        try:
+            driver.switch_to.window(h)
+            url = driver.current_url or ""
+        except Exception:
+            continue
+        if "kohom.or.kr" in url and not any(part in url for part in WORK_WINDOW_PARTS):
+            return h
+    if not handles:
+        raise LoginError("브라우저 창이 모두 닫혀 있습니다.")
+    return handles[0]
 
 
 def _visible(driver, css: str):

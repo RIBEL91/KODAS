@@ -43,6 +43,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from html import escape
+from html.parser import HTMLParser
 
 WEEKDAYS = "월화수목금토일"
 DATE_RE = re.compile(r"\{날짜:([^{}|]+)(?:\|([^{}]+))?\}")
@@ -62,6 +63,7 @@ def set_complex(values: dict) -> None:
 PERSON_KEYS = ("이름", "주소")
 INFO_KEYS = ("관리소", "단지명", "담당자", "전화번호")
 INTERNAL = "내부결재"
+COLLECTED_DIR = "수집한 서식"   # 서식 폴더 안: 홈넷 대장에서 모아 자동으로 만든 서식(목록에 보임)
 FIRST_DIR = "1안"      # 서식 폴더 안: 다른 서식의 1안으로만 쓰는 내부결재 서식(목록에는 안 보임)
 OPTION_DIR = "선택안"   # 서식 폴더 안: 다른 서식에 2안·3안…으로 골라 붙이는 서식(목록에는 안 보임)
 
@@ -773,3 +775,389 @@ def preview_html(title: str, receiver: str, body_html: str) -> str:
             f'<p style="{f}margin:0 0 4pt;">(경유)</p>'
             f'<p style="{f}margin:0 0 12pt;"><b>제&nbsp;&nbsp;목 : {escape(title)}</b></p>'
             f'{body_html}</div></body></html>')
+
+
+# ---------------- 홈넷 대장에서 모은 문서 → 서식 ----------------
+# 수집 도구(collector)가 저장한 {제목}.txt(+같은 이름의 .html)를 서식으로 바꾼다.
+# 이름·주소·날짜·금액·전화번호 등은 빈칸({…})이나 0000 같은 자리표시로 바꾼다.
+
+KNOWN_INFO: dict = {}          # 기본정보(관리소·단지명·담당자·전화번호). GUI가 채워 준다 → 해당 글자를 {…}로 바꾼다.
+
+
+class _Html2Lines(HTMLParser):
+    """웹한글이 내보낸 HTML을 줄 목록으로. 표는 서식의 '|' 표 문법으로 바꾼다."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lines: list[str] = []
+        self.cur: list[str] = []
+        self.skip = 0
+        self.depth = 0
+        self.rows: list[list[dict]] = []
+        self.row: list[dict] | None = None
+        self.cell: dict | None = None
+
+    def _flush(self):
+        text = "".join(self.cur).replace("\xa0", " ")
+        self.cur = []
+        text = re.sub(r"[ \t]*\n[ \t]*", " ", text).rstrip()
+        self.lines.append(text)
+
+    def _put(self, s: str):
+        if self.cell is not None:
+            self.cell["parts"].append(s)
+        else:
+            self.cur.append(s)
+
+    def _flush_before_block(self):
+        """문단·표가 시작되기 전 남은 글자를 내보낸다. HTML 줄바꿈 공백뿐이면 빈 줄로 만들지 않고 버린다
+        (진짜 빈 문단은 &nbsp;로 들어온다)."""
+        raw = "".join(self.cur)
+        if raw.strip(" \t\r\n"):
+            self._flush()
+        else:
+            self.cur = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in ("style", "script", "head", "title"):
+            self.skip += 1
+        elif tag == "table":
+            self.depth += 1
+            if self.depth == 1:
+                if self.cur:
+                    self._flush_before_block()
+                self.rows = []
+        elif tag == "tr" and self.depth == 1:
+            self.row = []
+        elif tag in ("td", "th") and self.depth == 1:
+            def num(k):
+                try:
+                    return max(1, int(re.sub(r"\D", "", a.get(k) or "1") or 1))
+                except ValueError:
+                    return 1
+            self.cell = {"parts": [], "rs": num("rowspan"), "cs": num("colspan"), "th": tag == "th"}
+        elif tag == "br":
+            self._put("\n") if self.cell is not None else self._flush()
+        elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
+            if self.cell is not None:
+                if self.cell["parts"] and self.cell["parts"][-1] != "\n":
+                    self.cell["parts"].append("\n")
+            elif self.cur:
+                self._flush_before_block()
+
+    def handle_endtag(self, tag):
+        if tag in ("style", "script", "head", "title"):
+            self.skip = max(0, self.skip - 1)
+        elif tag in ("td", "th") and self.depth == 1 and self.cell is not None:
+            if self.row is not None:
+                self.row.append(self.cell)
+            self.cell = None
+        elif tag == "tr" and self.depth == 1 and self.row is not None:
+            self.rows.append(self.row)
+            self.row = None
+        elif tag == "table":
+            if self.depth == 1:
+                self.lines += _table_lines(self.rows)
+                self.rows = []
+            self.depth = max(0, self.depth - 1)
+        elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6") and self.cell is None:
+            self._flush()
+
+    def handle_data(self, data):
+        if not self.skip:
+            self._put(data)
+
+    def result(self) -> list[str]:
+        if self.cur:
+            self._flush()
+        return self.lines
+
+
+def _cell_text(cell: dict) -> str:
+    text = "".join(cell["parts"]).replace("\xa0", " ")
+    parts = [re.sub(r"[ \t]*\r?\n[ \t]*", " ", p).strip() for p in text.split("\n")]
+    out = "<br>".join(p for p in parts if p)
+    return out.replace("|", "/")
+
+
+def _table_lines(rows: list[list[dict]]) -> list[str]:
+    """표를 서식의 '|' 문법으로: 위 칸과 합치기 '^', 왼쪽 칸과 합치기 '<'."""
+    if not rows:
+        return []
+    occupied: dict = {}
+    grid: list[list[str]] = []
+    for r, row in enumerate(rows):
+        out, c = [], 0
+        for cell in row:
+            while (r, c) in occupied:
+                out.append("^")
+                c += 1
+            out.append(_cell_text(cell))
+            out += ["<"] * (cell["cs"] - 1)
+            for rr in range(r + 1, r + cell["rs"]):
+                for kk in range(cell["cs"]):
+                    occupied[(rr, c + kk)] = True
+            c += cell["cs"]
+        while (r, c) in occupied:
+            out.append("^")
+            c += 1
+        grid.append(out)
+    width = max(len(g) for g in grid)
+    lines = ["| " + " | ".join(g + [""] * (width - len(g))) + " |" for g in grid]
+    header = 0
+    for row in rows:                       # <th>로만 된 맨 위 줄들이 머리글
+        if row and all(c["th"] for c in row):
+            header += 1
+        else:
+            break
+    if header > 1:
+        lines.insert(header, "|---|")
+    return [""] + lines + [""]
+
+
+def html_to_lines(html: str) -> list[str]:
+    p = _Html2Lines()
+    p.feed(html)
+    p.close()
+    return p.result()
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s|]+", "", s or "")
+
+
+_PHONE_LABELS = {"연락처", "전화", "전화번호", "문의", "문의처", "담당", "담당자", "휴대폰", "핸드폰", "대표번호", "팩스"}
+
+
+def _anonymize(text: str, dates: dict) -> str:
+    """사람·건물·돈·날짜 같은 개별 정보를 빈칸·자리표시로 바꾼다. dates는 날짜 칸 이름표를 문서 전체에서 공유."""
+    for key in ("관리소", "단지명", "담당자", "전화번호"):
+        val = (KNOWN_INFO.get(key) or "").strip()
+        if len(val) >= 2:
+            text = text.replace(val, "{" + key + "}")
+    text = re.sub(r"(?<![\d-])\d{6}-[1-4]\d{6}(?!\d)", "000000-0000000", text)          # 주민등록번호
+    text = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "○○○@○○○", text)                     # 전자우편
+    # 받는 분 이름·동호수·연락처는 입력칸으로: {이름} · {주소}(동·호) · {입력:연락처}
+    import privacy
+    labels = "|".join(re.escape(x).replace(r"\ ", r"\s*") for x in privacy.NAME_LABELS)
+    text = re.sub(r"((?:" + labels + r")\s*[:：]\s*)([가-힣]{2,4})(?![가-힣])",           # '성명: 홍길동'
+                  lambda m: m.group(1) + "{이름}" if privacy._name_ok(m.group(2)) else m.group(0), text)
+    text = re.sub(r"(\d{1,4}\s*동\s*\d{1,4}\s*호\s*)([가-힣]{2,4})(?![가-힣])",          # '105동 814호 홍길동'
+                  lambda m: m.group(1) + "{이름}" if privacy._name_ok(m.group(2), True) else m.group(0), text)
+    text = re.sub(r"(?<![가-힣{])([가-힣]{2,4})(\s*(?:귀하|님)(?![가-힣]))",                  # '홍길동 귀하'
+                  lambda m: "{이름}" + m.group(2) if privacy._name_ok(m.group(1), True) else m.group(0), text)
+    text = re.sub(r"(?<![\d-])01[016789][-. ]?\d{3,4}[-. ]?\d{4}(?!\d)", "{입력:연락처}", text)  # 휴대전화
+    text = re.sub(r"(?<![\d-])0\d{1,2}-\d{3,4}-\d{4}(?!\d)", "{입력:연락처}", text)     # 전화번호(관리소 번호는 위에서)
+    text = re.sub(r"(?<![가-힣{])([가-힣]{2,4})(\s*(?:\(\s*)?\{(?:전화번호|입력:연락처)\})",  # '홍길동 010-…'의 이름
+                  lambda m: "000" + m.group(2) if privacy._name_ok(m.group(1), True) else m.group(0), text)
+    text = re.sub(r"(\{관리소\}-|[가-힣]+(?:관리소|지사|본부|사업소|실|부|처|센터)-)\d{3,5}", r"\g<1>0000", text)  # 문서번호
+    text = re.sub(r"\d{1,4}\s*동\s*\d{1,4}\s*호", "{주소}", text)                       # 동·호
+    text = re.sub(r"((?:동\s*[·.,/]?\s*호(?:수)?)\s*[:：]\s*)\d{1,4}\s*-\s*\d{1,4}(?![\d-])",  # '동호수: 105-814'
+                  r"\g<1>{주소}", text)
+
+    def date_field(label_prefix, key, style):
+        label = dates.setdefault(key, f"{label_prefix}{sum(1 for k in dates if k[0] == key[0]) + 1}")
+        return "{날짜:" + label + "|" + style + "}"
+
+    def dotted(m):
+        try:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            dt.date(y, mo, d)
+        except ValueError:
+            return m.group(0)
+        return date_field("날짜", ("d", y, mo, d), "요일" if m.group(4) else "일")
+
+    def korean(m):
+        try:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            dt.date(y, mo, d)
+        except ValueError:
+            return m.group(0)
+        return date_field("날짜", ("d", y, mo, d), "요일" if m.group(4) else "일")
+
+    def ym(m):
+        y, mo = int(m.group(1)), int(m.group(2))
+        if not 1 <= mo <= 12:
+            return m.group(0)
+        return date_field("해당월", ("m", y, mo), "월")
+
+    wd = r"(\([월화수목금토일]\))?"
+    text = re.sub(r"(?<![\d.])(\d{4})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{1,2})\.?" + wd, dotted, text)
+    text = re.sub(r"(?<![\d.])(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일" + wd, korean, text)
+    text = re.sub(r"(?<![\d.])(\d{4})\s*년\s*(\d{1,2})\s*월(?!\s*\d)(?![가-힣]*일)", ym, text)
+    text = re.sub(r"(?<![\d.])((?:19|20)\d{2})\s*\.\s*(\d{1,2})(?:\s*월|\.)?(?![\d.]|\s*\d)", ym, text)   # 2026. 10. · 2025.12 · 2026.10월
+    text = re.sub(r"\d{1,3}(?:,\d{3})+", lambda m: re.sub(r"\d", "0", m.group(0)), text)   # 금액 → 0,000,000
+    text = re.sub(r"\(주\)\s*[가-힣A-Za-z0-9&]+", "(주)○○○", text)                       # 업체명
+    text = re.sub(r"주식회사\s*[가-힣A-Za-z0-9&]+", "주식회사 ○○○", text)
+    return text
+
+
+_RE_TITLE = re.compile(r"^\s*제\s*목\s*[:：]?\s*(.*)$")
+_RE_RECV = re.compile(r"^\s*수\s*신\s*자?\s*[:：]?\s*(.*)$")
+
+
+def _value_at(lines: list[str], i: int, rest: str) -> tuple[str, int]:
+    """'제 목 …'처럼 같은 줄에 값이 있으면 그것을, '제 목' 글자만 있으면 다음 빈 줄이 아닌 줄을 값으로."""
+    rest = rest.strip()
+    if rest:
+        return rest, i
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    return (lines[j].strip(), j) if j < len(lines) else ("", i)
+
+
+def split_header(lines: list[str]) -> tuple[str, str, int | None]:
+    """수집한 글의 머리에서 (제목, 수신자, 제목 값이 있는 줄 번호)를 읽는다. 못 찾으면 줄 번호 None."""
+    head = lines[:60]
+    t_label = next((i for i, l in enumerate(head) if re.match(r"^\s*제\s*목(?:\s|[:：]|$)", l)), None)
+    if t_label is None:
+        return "", "", None
+    title, t_idx = _value_at(lines, t_label, _RE_TITLE.match(lines[t_label]).group(1))
+    receiver = ""
+    for i, l in enumerate(lines[:t_label]):
+        if not re.match(r"^\s*수\s*신(?:\s|[:：]|자|$)", l):
+            continue
+        value, _ = _value_at(lines, i, _RE_RECV.match(l).group(1))
+        if value and not re.match(r"^\(?\s*경\s*유|^참\s*조|^제\s*목", value) and i + 1 <= t_label:
+            receiver = value
+        break
+    return title, receiver, t_idx
+
+
+_NAME_HEAD_RE = re.compile(r"^(성\s*명|이\s*름|대상자|수령인|계약자|세대주|신청인|입주자|참석자|받는\s*분)")
+
+
+# 본문 뒤 홈넷 서식 부분: 발신명의(…관리소장), 결재란(기안자·검토자), 시행·접수·우·전화 줄. 서식 본문에서는 뺀다
+_SENDER_RE = re.compile(r"주택관리공단\s*\S*\s*(?:관리소장|사업소장|지사장|본부장|센터장|사장)\s*$|"
+                        r"^\S*(?:관리소장|사업소장|지사장|본부장|센터장)\s*$")
+_FOOTER_WORDS = ("시행", "접수", "기안자", "검토자", "결재권자", "협조자", "전결", "대결")
+
+
+def _cut_footer(lines: list[str]) -> list[str]:
+    """본문 아래 발신명의·결재란·시행 줄부터 끝까지 뺀다(표로 들어온 경우 그 표 처음부터)."""
+    for i, line in enumerate(lines):
+        if i == 0:
+            continue
+        if line.strip().startswith("|"):
+            cells = [c for c in _split_row(line) if c not in ("", "^", "<")]
+        else:
+            cells = [line.strip()] if line.strip() else []
+        sender = any(_SENDER_RE.search(c) for c in cells)
+        footer = sum(1 for c in cells if c in _FOOTER_WORDS) >= 1 and line.strip().startswith("|")
+        if sender or footer:
+            j = i
+            if line.strip().startswith("|"):          # 그 표의 첫 줄부터
+                while j > 0 and lines[j - 1].strip().startswith("|"):
+                    j -= 1
+            out = lines[:j]
+            while out and not out[-1].strip():
+                out.pop()
+            return out
+    return lines
+
+
+def _hide_names_in_tables(lines: list[str]) -> list[str]:
+    """표에서 머리글이 성명·이름·대상자 … 인 열의 사람 이름(한글 2~4자)을 000으로 바꾼다."""
+    out = list(lines)
+    i = 0
+    while i < len(out):
+        if not out[i].strip().startswith("|"):
+            i += 1
+            continue
+        j = i
+        while j < len(out) and out[j].strip().startswith("|"):
+            j += 1
+        rows = [_split_row(l) for l in out[i:j]]
+        cols = [c for c, h in enumerate(rows[0]) if _NAME_HEAD_RE.match(h.replace("<br>", ""))]
+        if cols:
+            for r in range(1, len(rows)):
+                if _is_sep(out[i + r]):
+                    continue
+                for c in cols:
+                    if c < len(rows[r]) and re.fullmatch(r"[가-힣]{2,4}", rows[r][c].strip()):
+                        rows[r][c] = "000"
+                out[i + r] = "| " + " | ".join(rows[r]) + " |"
+        i = j
+    return out
+
+
+def from_collected(text: str, path: str = "", area: str = "주택관리") -> str:
+    """수집한 문서(글자 + 같은 이름의 .html)를 서식 파일 글자('제목:… --- 본문')로 바꾼다.
+    area: 서식이 놓일 분야(임대·시설·주거복지·주택관리). 서식 고르기의 '기타 공문 → 수집한 서식' 묶음에 보인다."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x0c", "\n")
+    lines = [re.sub(r"^\t+", lambda m: "  " * len(m.group(0)), l.rstrip()).replace("\t", "  ")
+             for l in text.split("\n")]
+    stem = os.path.splitext(os.path.basename(path))[0] if path else "수집한 서식"
+    title, receiver, t_idx = split_header(lines)
+    title = title or stem
+    receiver = receiver or INTERNAL
+    body = lines[t_idx + 1:] if t_idx is not None else lines
+
+    html_path = os.path.splitext(path)[0] + ".html" if path else ""
+    if html_path and os.path.isfile(html_path):      # 표 모양을 살리려면 HTML이 낫다
+        try:
+            with open(html_path, encoding="utf-8-sig") as f:
+                hl = html_to_lines(f.read())
+            key = _norm(title)[:24]
+            pos = next((i for i, l in enumerate(hl) if key and key in _norm(l)), None)
+            if pos is not None:
+                body = hl[pos + 1:]
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    while body and not body[0].strip():
+        body.pop(0)
+    last = max((i for i, l in enumerate(body) if re.search(r"끝\.\s*$", l)), default=None)
+    if last is not None:                               # '끝.' 뒤에는 안내문구(「…」·※)만 남긴다
+        keep = []
+        for l in body[last + 1:]:
+            if not l.strip() or l.lstrip().startswith(("「", "※", "*")):
+                keep.append(l)
+            else:
+                break
+        body = body[:last + 1] + keep
+    while body and not body[-1].strip():
+        body.pop()
+    body = ["—" if l.strip() == "---" else l for l in body]
+    # 양쪽 정렬 때문에 생긴 긴 공백은 하나로(줄 앞 들여쓰기와 '붙임  '·'  끝.'의 두 칸은 그대로)
+    body = [re.match(r"^\s*", l).group(0) + re.sub(r"(?<=\S) {3,}(?=\S)", " ", l.lstrip()) for l in body]
+    body = _cut_footer(body)
+    body = _hide_names_in_tables(body)
+    in_attach = False                                   # 붙임 아래 둘째 항목은 첫 항목 숫자에 맞춰 6칸
+    for i, l in enumerate(body):
+        if re.match(r"^\s*붙\s*임", l):
+            in_attach = True
+        elif not l.strip():
+            in_attach = False
+        elif in_attach and re.match(r"^\s*\d+\.\s", l):
+            body[i] = "      " + l.strip()
+    out: list[str] = []
+    for l in body:                                      # 연속 빈 줄은 하나로
+        if l == "" and out and out[-1] == "":
+            continue
+        out.append(l)
+    body = out
+
+    dates: dict = {}
+    title = _anonymize(title, dates).replace("\n", " ")
+    body_text = _anonymize("\n".join(body), dates)
+    group = "수집한 서식" if receiver == INTERNAL else "수집한 서식(수신자 있음)"
+    if receiver != INTERNAL:
+        receiver = _anonymize(receiver, dates)
+    binder = ""
+    meta_path = os.path.splitext(path)[0] + ".meta.json" if path else ""
+    if meta_path and os.path.isfile(meta_path):         # 수집할 때 함께 저장한 편철
+        try:
+            import json
+            with open(meta_path, encoding="utf-8-sig") as f:
+                binder = str(json.load(f).get("편철", "") or "").strip()
+        except (OSError, ValueError):
+            binder = ""
+    memo = "홈넷 대장에서 모은 문서로 만든 서식 — 쓰기 전에 남은 개인정보가 없는지 확인하세요."
+    if binder:
+        memo += f" 원본 편철: {binder}"
+    head = (f"제목: {title}\n수신자: {receiver}\n구분: {group}\n분야: {area or '주택관리'}\n"
+            f"묶음: {group}\n메모: {memo}\n")
+    return f"{head}---\n{body_text}\n"

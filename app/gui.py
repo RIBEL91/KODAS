@@ -141,6 +141,93 @@ class MonthEntry(ttk.Frame):
         self.month.set(str(d.month))
 
 
+class CollectDialog(tk.Toplevel):
+    """대장 문서 받기 설정: 검색어 · 개수 · 받을 것(서식·PDF·첨부) · 꼭 가릴 이름·동호수·연락처."""
+
+    AREAS = ("임대", "시설", "주거복지", "주택관리")
+
+    def __init__(self, master, area: str = "주택관리"):
+        super().__init__(master)
+        self.title("홈넷 대장 문서 받기")
+        self.resizable(False, False)
+        self.transient(master)
+        self.result = None
+        f = ttk.Frame(self, padding=14)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, justify="left", text=(
+            "홈넷 전자결재 → 대장관리 → 기록물등록대장의 문서를 자동으로 열어 [다음]으로 넘기며 받습니다.\n"
+            "본문 없이 편철·등록구분만 보이는 '조회' 화면은 건너뛰고, 보안(암호) 문서는 홈넷 비밀번호로 열어 봅니다.\n"
+            "대장 문서 창을 미리 열어 두었다면 그 문서부터 받습니다.")).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(f, text="제목 검색어(선택)").grid(row=1, column=0, sticky="e", padx=6, pady=(10, 3))
+        self.keyword = ttk.Entry(f, width=34)
+        self.keyword.grid(row=1, column=1, sticky="w", pady=(10, 3))
+        ttk.Label(f, text="살펴볼 문서 수").grid(row=2, column=0, sticky="e", padx=6, pady=3)
+        self.count = ttk.Spinbox(f, from_=1, to=500, width=8)
+        self.count.set("30")
+        self.count.grid(row=2, column=1, sticky="w")
+        self.internal = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f, text="내부결재 문서만 (켜면 수신자가 있는 문서·접수 문서도 건너뜀)",
+                        variable=self.internal).grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
+
+        what = ttk.LabelFrame(f, text="받을 것", padding=(10, 4))
+        what.grid(row=4, column=0, columnspan=2, sticky="we", pady=(8, 4))
+        self.pdf = tk.BooleanVar(value=True)
+        ttk.Checkbutton(what, text="문서를 PDF 파일로 받기 — 이름·동호수·연락처는 000으로 가림",
+                        variable=self.pdf).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        self.attach = tk.BooleanVar(value=True)
+        ttk.Checkbutton(what, text="첨부파일도 받기 — PDF 첨부도 이름·동호수·연락처를 000으로 가림",
+                        variable=self.attach).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+        self.register = tk.BooleanVar(value=True)
+        ttk.Checkbutton(what, text="서식으로 넣기 — 이름·동호수·연락처는 공문 쓸 때 넣는 칸이 됨",
+                        variable=self.register).grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Label(what, text="분야").grid(row=2, column=1, sticky="e", padx=(10, 4))
+        self.area = ttk.Combobox(what, values=self.AREAS, width=9, state="readonly")
+        self.area.set(area if area in self.AREAS else "주택관리")
+        self.area.grid(row=2, column=2, sticky="w")
+
+        hide = ttk.LabelFrame(f, text="꼭 가릴 글자 (선택 — 자동으로 못 찾는 것, 쉼표로 여러 개)", padding=(10, 4))
+        hide.grid(row=5, column=0, columnspan=2, sticky="we", pady=4)
+        self.hide = {}
+        for i, (key, hint) in enumerate((("이름", "예: 홍길동, 김영희"), ("동호수", "예: 105동 814호"),
+                                         ("연락처", "예: 010-1234-5678"))):
+            ttk.Label(hide, text=key).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=2)
+            e = ttk.Entry(hide, width=30)
+            e.grid(row=i, column=1, sticky="w", pady=2)
+            ttk.Label(hide, text=hint, foreground="#777").grid(row=i, column=2, sticky="w", padx=6)
+            self.hide[key] = e
+        ttk.Label(f, foreground="#777", justify="left", text=(
+            "관리소 대표번호(기본정보의 전화번호)는 가리지 않습니다. 스캔(그림)만 있는 PDF는 글자를 찾을 수 없어\n"
+            "가리지 못하니 완료 창의 목록을 보고 직접 확인해 주세요.")).grid(row=6, column=0, columnspan=2, sticky="w")
+        b = ttk.Frame(f)
+        b.grid(row=7, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(b, text="취소", command=self.destroy).pack(side="right")
+        ttk.Button(b, text="받기 시작", style="Accent.TButton", command=self._ok).pack(side="right", padx=6)
+        self.keyword.focus_set()
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.grab_set()
+
+    @staticmethod
+    def split_words(text: str) -> list:
+        """'홍길동, 김영희 / 105동 814호' → ['홍길동', '김영희', '105동 814호']"""
+        return [w.strip() for w in re.split(r"[,，/;\n]+", text or "") if w.strip()]
+
+    def _ok(self):
+        try:
+            n = max(1, min(500, int(self.count.get())))
+        except ValueError:
+            messagebox.showwarning("문서 수", "살펴볼 문서 수를 숫자로 넣어 주세요.", parent=self)
+            return
+        if not (self.pdf.get() or self.attach.get() or self.register.get()):
+            messagebox.showwarning("받을 것", "PDF·첨부파일·서식 중 하나는 골라 주세요.", parent=self)
+            return
+        extra = [w for e in self.hide.values() for w in self.split_words(e.get())]
+        self.result = {"keyword": self.keyword.get().strip(), "count": n, "area": self.area.get(),
+                       "only_internal": self.internal.get(), "register": self.register.get(),
+                       "pdf": self.pdf.get(), "attachments": self.attach.get(), "extra": extra}
+        self.destroy()
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -223,6 +310,7 @@ class App:
         logo = os.path.join(paths.bundle_dir(), "assets", "logo.png")
         shortcuts = (("단지기본정보", "building", "blue", self._show_complex),
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
+                     ("대장 문서 받기", "download", "green", self._collect_docs),
                      ("사용 방법", "help", "violet", self._show_help))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
@@ -389,6 +477,8 @@ class App:
         f.add_separator()
         f.add_command(label="서식 폴더 열기", command=lambda: os.startfile(paths.template_dir()))
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
+        f.add_command(label="홈넷 대장 문서 받기 (PDF·첨부·서식)…", command=self._collect_docs)
+        f.add_command(label="받은 대장 문서 폴더 열기", command=lambda: os.startfile(paths.sub_dir("수집")))
         f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
@@ -733,6 +823,10 @@ class App:
     def _load_templates(self):
         folder = paths.template_dir()
         self.templates, errors = dtpl.load_all(folder)
+        got_dir = os.path.join(folder, dtpl.COLLECTED_DIR)    # 홈넷 대장에서 모아 만든 서식도 목록에 넣는다
+        got, got_errors = dtpl.load_all(got_dir) if os.path.isdir(got_dir) else ([], [])
+        self.templates += got
+        errors += got_errors
         first_dir = os.path.join(folder, dtpl.FIRST_DIR)
         firsts, first_errors = dtpl.load_all(first_dir) if os.path.isdir(first_dir) else ([], [])
         self.first_docs = {x.file_name: x for x in firsts}
@@ -1635,6 +1729,134 @@ class App:
         except OSError as ex:
             self.log(f"⚠️ 작성 이력 저장 실패: {ex}")
 
+    # ================= 대장 문서 모으기 =================
+    def _collect_docs(self):
+        """기록물등록대장 문서를 [다음]으로 넘기며 '수집' 폴더에 받는다.
+        고른 것에 따라 PDF(000으로 가림)·첨부파일(PDF는 000으로 가림)·서식('수집한 서식')을 만든다."""
+        hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
+        if not (hid and hpw):
+            messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
+            self._show_settings()
+            return
+        dlg = CollectDialog(self.root, self.area)
+        self.root.wait_window(dlg)
+        opt = dlg.result
+        if not opt:
+            return
+        vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
+        dest = os.path.join(paths.template_dir(), dtpl.COLLECTED_DIR)
+        info = self._info_values()
+        dtpl.KNOWN_INFO = info                     # 관리소·단지명·담당자·전화번호 글자는 {…} 칸으로 바꾼다
+        keep_phones = [info.get("전화번호", "")]   # 관리소 대표번호는 PDF에서 가리지 않는다
+        stop = threading.Event()
+        box = self._collect_progress(stop)
+
+        def log(m):
+            self.log(m)
+            self.q.put(("call", lambda m=m: box["show"](m)))
+
+        def work():
+            import collector
+            import session
+            session.ensure_tunnel(self.log, vpn_id, vpn_pw)
+            if not homnet.driver_alive(self.driver):
+                self.driver = None
+                self.driver = session.open_homnet(hid, hpw, self.log)
+            out = os.path.join(paths.sub_dir("수집"), dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            if stop.is_set():
+                raise RuntimeError("시작하기 전에 중단했습니다.")
+            res = collector.collect(self.driver, out, opt["count"], log,
+                                    only_internal=opt["only_internal"], password=hpw,
+                                    keyword=opt["keyword"], auto_open=True, pdf=opt["pdf"],
+                                    attachments=opt["attachments"], extra=opt["extra"], keep_phones=keep_phones,
+                                    stop=stop)
+            res["made"] = []
+            if opt["register"] and res["names"]:
+                res["made"] = collector.import_to_templates(out, res["names"], dest, log, opt["area"])
+            return res
+
+        def ok(res):
+            box["close"]()
+            made = res.get("made") or []
+            att = res.get("attach") or {}
+            self.log(f"✅ 대장 문서 {res['saved']}개 받음 · PDF {res.get('pdfs', 0)}개 · 첨부 {att.get('files', 0)}개"
+                     f" · 서식 {len(made)}개 ({res['dir']})")
+            if made:
+                self._load_templates()
+                self._set_area(opt["area"])
+                self.picker.opened |= {"수집한 서식", "수집한 서식(수신자 있음)"}   # 받은 묶음을 펼쳐 보여 준다
+                self._show_picker()
+            lines = [("⏹ 중간에 그만 받았습니다. " if res.get("stopped") else "") + f"{res['saved']}개 문서를 받았습니다.",
+                     f"  - 보안 문서를 비밀번호로 연 것: {res.get('unlocked', 0)}개",
+                     f"  - 받지 않음: '조회' 화면 {res.get('views', 0)}개, 열지 못한 보안 문서 {res.get('encrypted', 0)}개"
+                     + (f", 내부결재 아님 {res['skipped']}개" if res.get("skipped") else "")]
+            if opt["pdf"]:
+                lines.append(f"  - PDF {res.get('pdfs', 0)}개 (PDF 폴더 · 이름·동호수·연락처는 000)")
+            if opt["attachments"]:
+                lines.append(f"  - 첨부파일 {att.get('files', 0)}개 (첨부 폴더 · PDF {att.get('pdf', 0)}개에서 "
+                             f"{att.get('masked', 0)}곳을 000으로 가림)")
+                if att.get("scanned"):
+                    lines.append("  ⚠ 스캔(그림)이라 가리지 못한 PDF: " + ", ".join(att["scanned"][:5])
+                                 + (" …" if len(att["scanned"]) > 5 else ""))
+                if att.get("locked"):
+                    lines.append("  ⚠ 암호가 걸려 가리지 못한 PDF(그대로 둠): " + ", ".join(att["locked"][:5])
+                                 + (" …" if len(att["locked"]) > 5 else ""))
+                if att.get("other"):
+                    lines.append("  ⚠ PDF가 아니라 가리지 않은 파일(한글·엑셀 등): " + ", ".join(att["other"][:5])
+                                 + (" …" if len(att["other"]) > 5 else ""))
+            if made:
+                lines.append(f"\n서식 {len(made)}개를 [{opt['area']}] 분야 '기타 공문 → 수집한 서식' 묶음에 넣었습니다.\n"
+                             "이름·동호수·연락처는 공문 쓸 때 넣는 칸이 되었고, 그 밖의 사람 이름은 000으로 바꿨습니다.\n"
+                             "문장 속 개인정보가 남아 있을 수 있으니 쓰기 전에 한 번 훑어봐 주세요.")
+            lines.append(f"\n받은 폴더: {res['dir']}")
+            if messagebox.askyesno("받기 완료", "\n".join(lines) + "\n\n받은 폴더를 열까요?"):
+                os.startfile(res["dir"])
+
+        def err(ex):
+            box["close"]()
+            messagebox.showerror("받기 실패", str(ex))
+
+        if self.busy:
+            box["close"]()
+        self.run_bg(work, ok, err)
+
+    def _collect_progress(self, stop: threading.Event) -> dict:
+        """대장 문서 받는 동안 띄우는 작은 창: 지금 하는 일과 [■ 그만 받기] 단추.
+        누르면 지금 문서까지만 받고 멈춘 뒤, 받은 문서는 PDF·서식으로 정리한다."""
+        win = tk.Toplevel(self.root)
+        win.title("대장 문서 받는 중")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        f = ttk.Frame(win, padding=14)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="홈넷 대장 문서를 받고 있습니다…", font=FONT_B).pack(anchor="w")
+        now = tk.StringVar(value="홈넷에 로그인하는 중")
+        ttk.Label(f, textvariable=now, width=64, foreground="#555").pack(anchor="w", pady=(6, 10))
+        bar = ttk.Progressbar(f, mode="indeterminate", length=420)
+        bar.pack(fill="x")
+        bar.start(15)
+
+        def halt():
+            if stop.is_set():
+                return
+            stop.set()
+            btn.config(state="disabled", text="멈추는 중… (지금 문서까지 받고 정리합니다)")
+            self.log("⏹ [그만 받기]를 눌렀습니다. 지금 문서까지 받고 멈춥니다.")
+
+        btn = ttk.Button(f, text="■ 그만 받기", command=halt)
+        btn.pack(anchor="e", pady=(10, 0))
+        win.protocol("WM_DELETE_WINDOW", halt)
+
+        def show(m: str):
+            if win.winfo_exists():
+                now.set(m.strip()[:70])
+
+        def close():
+            if win.winfo_exists():
+                bar.stop()
+                win.destroy()
+        return {"show": show, "close": close, "win": win, "halt": halt}
+
     # ================= 기타 =================
     def _clear_accounts(self):
         if not messagebox.askyesno("계정 지우기", "저장된 VPN·홈넷 계정을 지울까요?\n(관리소 정보는 남습니다)"):
@@ -1658,6 +1880,11 @@ class App:
             "  4. [홈넷에 자동 작성]을 누르면 브라우저가 열리고\n"
             "     전자결재 → 문서작성 → 표준기안문에 제목·수신자·본문을 넣습니다.\n"
             "  5. 브라우저에서 내용을 확인하고 [결재올림]은 직접 누릅니다.\n\n"
+            "대장 문서 받기\n"
+            "  처음 화면 [대장 문서 받기](또는 [파일 → 홈넷 대장 문서 받기])를 누르면 기록물등록대장의 문서를\n"
+            "  자동으로 열어 받습니다. PDF·첨부파일은 이름·동호수·연락처를 000으로 가리고, 서식으로 넣으면\n"
+            "  이름·동호수·연락처가 공문 쓸 때 넣는 칸이 됩니다. 보안 문서는 홈넷 비밀번호로 열어 봅니다.\n"
+            "  받는 동안 뜨는 작은 창의 [■ 그만 받기]를 누르면 지금 문서까지만 받고 멈춥니다.\n\n"
             "※ 브라우저 창은 작성이 끝날 때까지 닫지 마세요."))
 
     def _show_template_help(self):

@@ -43,6 +43,7 @@ ICON = {
     "building": "\ue731", "person": "\ue77b", "people": "\ue716", "help": "\ue897", "search": "\ue721",
     "add": "\ue710", "chevron": "\ue76c", "more": "\ue712", "star": "\ue735", "folder": "\uf12b",
     "report": "\ue9f9", "list": "\ue8bc", "info": "\ue946", "back": "\ue72b",
+    "download": "\ue896",
 }
 
 FONT_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")

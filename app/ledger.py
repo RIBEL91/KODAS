@@ -74,15 +74,15 @@ def pick_notice(rows: list[dict], round_no: int) -> Notice | None:
     return found[0] if found else None
 
 
-def find_notice(driver, round_no: int, log) -> Notice:
-    """기록물등록대장에서 N차 결과 통보를 찾는다. 목록만 읽고 아무것도 바꾸지 않는다."""
+def open_register(driver) -> None:
+    """홈넷 본 창에서 전자결재 → 대장관리 → 기록물등록대장을 열고 목록 화면(contentview) 안으로 들어간다."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support import expected_conditions as EC
 
+    import homnet
     import homnet_draft as hd
-    driver.switch_to.window(driver.window_handles[0])
+    driver.switch_to.window(homnet.main_window(driver))
     driver.switch_to.default_content()
-    log(f"기록물등록대장에서 '{NOTICE_TITLE}({round_no}차' 를 찾습니다...")
     driver.get(hd.DRAFT_URL)
     hd._wait(driver, EC.frame_to_be_available_and_switch_to_it((By.ID, "linkageIframe")), 30,
              "전자결재 화면이 열리지 않았습니다.")
@@ -96,9 +96,20 @@ def find_notice(driver, round_no: int, log) -> Notice:
         "return !!(window.DocumentList && document.getElementById('editSearchCondition') && window.DoSearch)"),
         30, "기록물등록대장 검색칸이 준비되지 않았습니다.")
     time.sleep(1)
+
+
+def search_register(driver, words: str) -> None:
+    """기록물등록대장 목록을 제목으로 검색한다(open_register 뒤, contentview 안에서)."""
     driver.execute_script("document.getElementById('searchType').value = 'title';"
                           "document.getElementById('editSearchCondition').value = arguments[0]; DoSearch();",
-                          f"{NOTICE_TITLE}({round_no}차")
+                          words)
+
+
+def find_notice(driver, round_no: int, log) -> Notice:
+    """기록물등록대장에서 N차 결과 통보를 찾는다. 목록만 읽고 아무것도 바꾸지 않는다."""
+    log(f"기록물등록대장에서 '{NOTICE_TITLE}({round_no}차' 를 찾습니다...")
+    open_register(driver)
+    search_register(driver, f"{NOTICE_TITLE}({round_no}차")
     notice, end = None, time.time() + 20
     while time.time() < end:
         time.sleep(1)
