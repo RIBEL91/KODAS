@@ -140,15 +140,20 @@ class Sidebar(HitCanvas):
         P = Painter(w, h, SIDEBAR)
         P.line([(w - 0.5, 0), (w - 0.5, h)], BORDER, 1)
 
-        # 로고 + 이름
+        # 로고(파란 문서) + 이름 KODAS
         lx, ly, ls = 22 * k, 30 * k, 46 * k
-        P.shadow(lx, ly, lx + ls, ly + ls, 12 * k, alpha=40, dy=4, color="#3a5ee8")
-        P.gradient_rrect(lx, ly, lx + ls, ly + ls, 12 * k, "#5a95fb", "#3559e6")
-        P.icon("list", lx + ls / 2, ly + ls / 2, 22 * k, "#ffffff")
-        self.create_text(lx + ls + 14 * k, ly + ls / 2 - 9 * k, anchor="w", text="공문작성기",
-                         font=(FONT, fs(16, k), "bold"), fill=TEXT)
-        self.create_text(lx + ls + 15 * k, ly + ls / 2 + 13 * k, anchor="w",
-                         text="홈넷 공문 자동작성" + (f" · v{self.version}" if self.version else ""),
+        dw, dh, fold = 30 * k, 38 * k, 10 * k           # 문서 너비·높이·접힌 귀퉁이
+        dx0, dy0 = lx + (ls - dw) / 2, ly + (ls - dh) / 2
+        dx1, dy1 = dx0 + dw, dy0 + dh
+        P.shadow(dx0, dy0, dx1, dy1, 5 * k, alpha=36, dy=3, color="#3a5ee8")
+        P.polygon([(dx0, dy0), (dx1 - fold, dy0), (dx1, dy0 + fold), (dx1, dy1), (dx0, dy1)], "#3d6cf0")
+        P.polygon([(dx1 - fold, dy0), (dx1, dy0 + fold), (dx1 - fold, dy0 + fold)], "#a9c1fb")
+        for i in range(3):                               # 글줄 세 개
+            yy = dy0 + 17 * k + i * 6.5 * k
+            P.line([(dx0 + 7 * k, yy), (dx1 - (7 if i < 2 else 12) * k, yy)], "#ffffff", max(1, round(2.2 * k)))
+        self.create_text(lx + ls + 12 * k, ly + ls / 2 - 9 * k, anchor="w", text="KODAS",
+                         font=(FONT, fs(17, k), "bold"), fill=TEXT)
+        self.create_text(lx + ls + 13 * k, ly + ls / 2 + 13 * k, anchor="w", text="공문 자동작성 시스템",
                          font=(FONT, fs(8.5, k, 8)), fill=SUB)
 
         # 메뉴
@@ -343,7 +348,7 @@ class Home(HitCanvas):
         gb = self.bbox(greet)
         P.emoji("\U0001F44B", gb[2] + 10 * k, (gb[1] + gb[3]) / 2, 26 * k)
         self.create_text(x0 + 5 * k, gb[3] + 6 * k, anchor="nw",
-                         text="서식을 고르고 이름·날짜만 넣으면 홈넷 공문을 자동으로 작성해요.",
+                         text="KODAS가 서식에 이름·날짜만 넣으면 홈넷 공문을 자동으로 작성해요.",
                          font=(FONT, fs(11, k, 9)), fill=SUB)
         sw = min(300 * k, (x1 - x0) * 0.42)
         sy, sh = 34 * k, 42 * k

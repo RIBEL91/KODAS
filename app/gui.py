@@ -167,7 +167,7 @@ class App:
         self.none_checked: dict[str, bool] = {}          # 서식별 '없음표시'(예: 소명대상 없음) 체크 (이번 실행 동안)
         self.area = "임대"                              # 시작 화면에서 고른 분야
 
-        root.title(f"공문 작성기 — 홈넷 표준기안문 자동 작성 v{VERSION}")
+        root.title(f"KODAS — 공문 자동작성 시스템 v{VERSION}")
         try:
             root.iconbitmap(default=os.path.join(paths.bundle_dir(), "assets", "app.ico"))
         except tk.TclError:
