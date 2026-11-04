@@ -1,0 +1,11 @@
+selenium
+cryptography
+psutil
+openpyxl
+xlrd
+pillow
+sv_ttk
+tkcalendar
+pyinstaller
+pytest
+pymupdf
