@@ -148,7 +148,7 @@ def test_input_fields():
     assert t08.uses("문서링크")
     t14 = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("14_"))
     assert t14.input_fields() == ["차수"]
-    assert t14.uses("심사결과링크") and t14.uses("소명안내링크")
+    assert t14.uses("심사결과링크") and not t14.uses("소명안내링크")
 
 
 def test_options_header_and_folder(tmp_path):

@@ -1129,6 +1129,7 @@ class App:
         kinds = {k: v for d in reversed(docs) for k, v in d.input_kinds().items()}
         defaults = {k: v for d in reversed(docs) for k, v in d.input_defaults().items()}
         uses_link = "차수" in inputs and any(d.uses(k) for d in docs for k in LINK_KEYS)
+        self.uses_review = any(d.uses("심사결과링크") for d in docs)    # 소명결과: 차수로 입주자격심사 결과도 찾는다
         if uses_link and "자격검색요청일" not in inputs:
             tip = ("차수를 넣으면 자동 작성 때 [문서링크]에서 같은 차수의 '입주자격심사 결과'와 "
                    "같은 차수·월의 '소명 안내' 문서를 찾아 관련 문서번호 자리에 넣습니다")
@@ -1161,9 +1162,7 @@ class App:
                 ttk.Label(box, text="숫자만 적고 Enter (예: 34) — 그 차수 공문을 홈넷에서 찾아 "
                                     "관련 문서 링크와 날짜를 자동으로 넣습니다",
                           foreground="#777").pack(side="left", padx=8)
-                e.bind("<Return>", lambda _e: self._lookup_round())
-                e.bind("<FocusOut>", lambda _e: self._lookup_round(auto=True))
-                self._looked_round = self._round()
+                e.bind("<Return>", lambda _e: self._lookup_round())    # 칸을 벗어나는 것만으로는 찾지 않는다
             elif label == "차수":
                 ttk.Label(box, text="숫자만 적어 주세요 (예: 34)", foreground="#777").pack(side="left", padx=8)
             elif kinds.get(label) == "금액":
@@ -1221,25 +1220,20 @@ class App:
                 for i, k in enumerate(order, 1)]
 
     # ---------- 차수 → 기록물등록대장 조회 ----------
-    def _lookup_round(self, auto: bool = False):
-        """'주택소유 전산검색 결과 통보(N차 …)'를 기록물등록대장에서 찾아 통보일·요청일을 채운다.
-        auto: 차수 칸을 벗어날 때. 차수가 바뀌었을 때만 조용히 찾는다."""
+    def _lookup_round(self, then=None):
+        """'주택소유 전산검색 결과 통보(N차 …)'를 기록물등록대장에서 찾아 통보일·요청일을 채운다."""
         box = self.text_widgets.get("차수")
         raw = box.get().strip().rstrip("차").strip() if box else ""
-        if auto and (not raw.isdigit() or raw == getattr(self, "_looked_round", "")):
-            return
         if not raw.isdigit():
             messagebox.showwarning("차수", "차수를 숫자로 넣어 주세요. 예: 34")
             return
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
-        if auto and not (hid and hpw):
-            return
-        self._looked_round = raw
         if not (hid and hpw):
             messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self.nb.select(0)
             return
         vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
+        uses_review = getattr(self, "uses_review", False)
 
         def work():
             import ledger
@@ -1248,9 +1242,21 @@ class App:
             if not homnet.driver_alive(self.driver):
                 self.driver = None
                 self.driver = session.open_homnet(hid, hpw, self.log)
-            return ledger.find_notice(self.driver, int(raw), self.log)
+            review = None
+            if uses_review:
+                try:
+                    review = ledger.find_review(self.driver, int(raw), self.log)
+                except ledger.LedgerError as ex:
+                    self.log(f"⚠️ {ex}")
+            return ledger.find_notice(self.driver, int(raw), self.log), review
 
-        def ok(n):
+        def ok(result):
+            n, review = result
+            if review and "갱신월" in self.date_widgets:
+                self.date_widgets["갱신월"].set_date(review.renewal_month)
+                self.log(f"  {review.title} — {review.doc_number}, 갱신월 {review.renewal_month:%Y-%m}")
+            elif uses_review:
+                messagebox.showwarning("입주자격심사 결과", f"{raw}차 입주자격심사 결과 문서를 찾지 못했습니다. 갱신월을 직접 확인해 주세요.")
             fill = {}
             if n.request_date:
                 fill["자격검색요청일"] = n.request_date
@@ -1272,9 +1278,10 @@ class App:
                     continue
                 self.log(f"  {label}: {dtpl.fmt_date(value, '일')}")
             self._refresh()
+            if then:      # [자동 작성]에서 왔으면 찾은 날짜로 이어서 작성한다
+                then()
 
         def err(ex):
-            self._looked_round = ""     # 차수 칸에서 Enter를 다시 누르면 또 찾는다
             messagebox.showerror("찾지 못함", f"{ex}\n\n차수를 확인하고 Enter로 다시 찾거나, "
                                             "날짜를 [✏ 본문 직접 고치기]에서 직접 넣어 주세요.")
 
@@ -1557,9 +1564,8 @@ class App:
                 messagebox.showwarning("차수 필요", "차수를 숫자로 넣어 주세요. 예: 34")
                 self.text_widgets["차수"].focus_set()
                 return
-            messagebox.showinfo("날짜 찾기", f"{self._round()}차 결과 통보 문서의 날짜를 홈넷에서 찾습니다.\n"
-                                           "다 찾으면 [홈넷에 자동 작성]을 한 번 더 눌러 주세요.")
-            self._lookup_round()
+            self.log(f"{self._round()}차 날짜를 홈넷에서 찾은 뒤 이어서 작성합니다...")
+            self._lookup_round(then=self._create_draft)
             return
         try:
             parts = []

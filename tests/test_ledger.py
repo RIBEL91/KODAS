@@ -33,3 +33,16 @@ def test_pick_prefers_request_round_and_exact_number():
     assert n.doc_number == "주거복지실-492" and n.request_date == dt.date(2026, 1, 27)
     assert ledger.pick_notice(ROWS, 3) is None          # '34차'가 '3차'로 잡히면 안 된다
     assert ledger.pick_notice(ROWS, 1) is None
+
+
+def test_pick_review_gets_renewal_month_and_exact_round():
+    rows = [_row("입주자격심사 결과(2026년 12월 갱신, 34차)", "20261008102600", "20261008102600",
+                 "광주양림2관리소-1899", "광주양림2관리소-1899"),
+            _row("갱신계약 입주자격심사 소명 결과(2026년 12월, 34차)", "20261101102600", "20261101102600",
+                 "광주양림2관리소-2000", "광주양림2관리소-2000"),
+            _row("입주자격심사 결과(2026년 11월 갱신, 4차, 소명대상 없음)", "20260908102600", "20260908102600",
+                 "광주양림2관리소-1500", "광주양림2관리소-1500")]
+    r = ledger.pick_review(rows, 34)
+    assert r.doc_number == "광주양림2관리소-1899" and r.renewal_month == dt.date(2026, 12, 1)
+    assert ledger.pick_review(rows, 4).renewal_month == dt.date(2026, 11, 1)
+    assert ledger.pick_review(rows, 3) is None          # '34차'가 '3차'로 잡히면 안 된다

@@ -123,3 +123,47 @@ def find_notice(driver, round_no: int, log) -> Notice:
     log(f"✅ {round_no}차 결과 통보: {notice.doc_number}, 통보일 {notice.enforce_date}, "
         f"요청일 {notice.request_date or '-'}")
     return notice
+
+
+REVIEW_TITLE = "입주자격심사 결과"
+
+
+@dataclass
+class Review:
+    round_no: int
+    title: str
+    doc_number: str            # 등록번호(예: 광주양림2관리소-1899)
+    renewal_month: dt.date     # 제목의 갱신월(그달 1일)
+
+
+def pick_review(rows: list[dict], round_no: int) -> Review | None:
+    """검색 결과 줄들에서 '입주자격심사 결과(2026년 12월 갱신, N차)'를 고른다. 같으면 최신(위쪽)."""
+    pat = re.compile(rf"{REVIEW_TITLE}\s*\(\s*(\d{{4}})년\s*(\d{{1,2}})월\s*갱신\s*,\s*{round_no}\s*차\s*[,)]")
+    for row in rows:
+        texts = [t.strip() for t in row.get("text", []) if t and t.strip() not in ("null", "-1")]
+        title = next((t for t in texts if pat.search(t)), "")
+        if not title:
+            continue
+        m = pat.search(title)
+        nums = [t for t in texts if re.fullmatch(r"[^\s|]+-\d+", t)]
+        return Review(round_no, title, nums[0] if nums else "", dt.date(int(m[1]), int(m[2]), 1))
+    return None
+
+
+def find_review(driver, round_no: int, log) -> Review:
+    """기록물등록대장에서 N차 입주자격심사 결과를 찾는다. 목록만 읽고 아무것도 바꾸지 않는다."""
+    log(f"기록물등록대장에서 '{REVIEW_TITLE}(… {round_no}차)' 를 찾습니다...")
+    open_register(driver)
+    search_register(driver, f"갱신, {round_no}차")
+    review, end = None, time.time() + 20
+    while time.time() < end:
+        time.sleep(1)
+        rows = json.loads(driver.execute_script(_JS_ROWS) or "[]")
+        review = pick_review(rows, round_no)
+        if review:
+            break
+    driver.switch_to.default_content()
+    if not review:
+        raise LedgerError(f"기록물등록대장(올해)에서 '{REVIEW_TITLE}(… {round_no}차)' 문서를 찾지 못했습니다.")
+    log(f"✅ {round_no}차 입주자격심사 결과: {review.doc_number}, 갱신월 {review.renewal_month:%Y-%m}")
+    return review

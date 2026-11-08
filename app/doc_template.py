@@ -83,6 +83,8 @@ def fmt_date(d: dt.date, style: str = "") -> str:
     style = (style or "요일").strip()
     if style in ("요일", "점요일"):
         return f"{d.year}. {d.month}. {d.day}.({wd})"
+    if style == "표점":      # 칸이 좁은 표 안: 2026.8.25
+        return f"{d.year}.{d.month}.{d.day}"
     if style in ("일", "점"):
         return f"{d.year}. {d.month}. {d.day}."
     if style == "월":
@@ -117,7 +119,7 @@ def fmt_date(d: dt.date, style: str = "") -> str:
 
 DATE_STYLES = ("요일", "일", "월", "월만", "년월", "년", "분기", "점", "점요일",
                "공문", "공문요일", "일자", "일요일", "월일", "월일요일",
-               "년월점", "점월", "짧은월", "짧은년", "짧은년월", "분기만")
+               "년월점", "점월", "짧은월", "짧은년", "짧은년월", "분기만", "표점")
 # 날짜 칸이 달만 고르는 칸이 되는 형식. 월·월만·년월은 칸 이름이 '…월'일 때만(임대 서식 그대로),
 # 아래 형식은 이름과 상관없이 달만 고른다(관리업무 서식).
 MONTH_STYLES = ("년월점", "점월", "짧은월", "짧은년", "짧은년월", "분기만")
