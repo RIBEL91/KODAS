@@ -38,7 +38,9 @@ TEXT_OPTS = dict(bg="white", relief="flat", borderwidth=0, highlightthickness=1,
 INFO_FIELDS = [("관리소", "관리소명", "예: 가나관리소 (문서번호 앞에 붙는 이름)"),
                ("단지명", "단지명", "예: 가나1단지"),
                ("담당자", "담당자 이름", "예: 홍길동"),
-               ("전화번호", "담당자 전화번호", "예: 031-000-0000")]
+               ("전화번호", "담당자 전화번호", "예: 031-000-0000"),
+               ("임대유형", "임대유형", "16·24번 공문에 해당 유형의 계약특수조건만 넣습니다")]
+RENT_TYPES = dtpl.RENT_TYPES
 
 
 def apply_theme(root: tk.Tk) -> ttk.Style:
@@ -426,6 +428,9 @@ class App:
     def _info_done(self, values: dict):
         """기본정보 화면의 [시작하기]: ① 탭 입력칸에 옮기고 저장한 뒤 공문 작성 화면으로."""
         for key, e in list(self.info_entries.items()) + [("homnet_id", self.homnet_id), ("homnet_pw", self.homnet_pw)]:
+            if isinstance(e, ttk.Combobox):     # 임대유형
+                e.set(values.get(key, ""))
+                continue
             e.delete(0, "end")
             e.insert(0, values.get(key, ""))
         self._save_settings()
@@ -650,6 +655,15 @@ class App:
         info.pack(fill="x", padx=10, pady=4)
         self.info_entries = {}
         for i, (key, label, hint) in enumerate(INFO_FIELDS):
+            if key == "임대유형":     # 고르는 칸
+                ttk.Label(info, text=label).grid(row=i, column=0, sticky="e", padx=8, pady=3)
+                cb = ttk.Combobox(info, values=RENT_TYPES, state="readonly", width=10)
+                cb.set(dtpl.normalize_rent_type(c.get(key)))
+                cb.grid(row=i, column=1, sticky="w", padx=4)
+                ttk.Label(info, text=hint, foreground="#777").grid(row=i, column=2, sticky="w")
+                cb.bind("<<ComboboxSelected>>", lambda _e: self._refresh())
+                self.info_entries[key] = cb
+                continue
             self.info_entries[key] = self._row(info, i, label, c.get(key, ""), hint=hint)
             self.info_entries[key].bind("<KeyRelease>", lambda _e: self._refresh())
 

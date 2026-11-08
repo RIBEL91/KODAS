@@ -13,6 +13,7 @@ import datetime as dt
 import tkinter as tk
 from tkinter import ttk
 
+from doc_template import RENT_TYPES, normalize_rent_type
 from ui_kit import (BORDER, CARD, FONT, HOVER_SOFT, LINE, MUTED, PAGE, PRIMARY, PRIMARY_D, PRIMARY_SOFT,
                     SIDEBAR, SUB, TEXT, TINTS, HitCanvas, Painter, ellipsize, fs, is_done, keep_colors,
                     round_rect)
@@ -917,7 +918,8 @@ class InfoScreen(tk.Frame):
     INFO = (("관리소", "관리소명", "예: 가나관리소 (문서번호 앞에 붙는 이름)"),
             ("단지명", "단지명", "예: 가나1단지"),
             ("담당자", "담당자 이름", "예: 홍길동"),
-            ("전화번호", "담당자 전화번호", "예: 031-000-0000"))
+            ("전화번호", "담당자 전화번호", "예: 031-000-0000"),
+            ("임대유형", "임대유형", "계약특수조건 조항을 유형에 맞춰 넣습니다"))
     ACCOUNT = (("homnet_id", "홈넷 아이디(사번)", "자동 작성 때 홈넷 로그인에 씁니다"),
                ("homnet_pw", "홈넷 비밀번호", "이 PC에만 암호화해 저장합니다"))
     REQUIRED = ("관리소", "단지명", "담당자")
@@ -931,6 +933,11 @@ class InfoScreen(tk.Frame):
         self.cv.pack(side="left", fill="both", expand=True)
         self.entries: dict[str, tk.Entry] = {}
         for key, _, _ in self.INFO + self.ACCOUNT:
+            if key == "임대유형":     # 고르는 칸
+                cb = ttk.Combobox(self.cv, values=RENT_TYPES, state="readonly", font=(FONT, 11))
+                cb.bind("<<ComboboxSelected>>", lambda _e: self.msg.set(""))
+                self.entries[key] = cb
+                continue
             e = tk.Entry(self.cv, relief="flat", bd=0, insertbackground=TEXT, highlightthickness=1,
                          font=(FONT, 11), show="●" if key == "homnet_pw" else "")
             keep_colors(e, bg="#f7f9fd", fg=TEXT, highlightbackground=BORDER, highlightcolor=PRIMARY)
@@ -949,6 +956,9 @@ class InfoScreen(tk.Frame):
     def show(self, label: str, values: dict):
         self.label = label
         for key, e in self.entries.items():
+            if isinstance(e, ttk.Combobox):
+                e.set(normalize_rent_type(values.get(key)))
+                continue
             e.delete(0, "end")
             e.insert(0, values.get(key, "") or "")
         self.msg.set("")

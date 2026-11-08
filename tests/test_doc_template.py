@@ -219,3 +219,13 @@ def test_save_roundtrip(tmp_path):
     t2 = dtpl.load(p)
     assert (t2.title, t2.receiver, t2.group, t2.body, t2.internal) == ("가", "내부결재", "나", "본문", True)
     assert t2.label == "01. 테스트"
+
+
+def test_rent_type_shows_only_matching_clause():
+    t = "조건 {유형:영구임대=제10조|국민임대·공공임대·행복주택=제9조}에 따라"
+    assert dtpl.fill(t, {"임대유형": "영구임대"}, {}) == "조건 제10조에 따라"
+    for v in ("국민임대", "공공임대", "행복주택", "국민"):       # 국민: 예전에 저장한 값
+        assert dtpl.fill(t, {"임대유형": v}, {}) == "조건 제9조에 따라"
+    all_clauses = "조건 제10조(영구임대), 제9조(국민임대·공공임대·행복주택)에 따라"
+    assert dtpl.fill(t, {}, {}) == all_clauses
+    assert dtpl.fill(t, {"임대유형": "도시공사"}, {}) == all_clauses

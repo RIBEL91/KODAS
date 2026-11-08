@@ -51,6 +51,7 @@ INPUT_RE = re.compile(r"\{입력:([^{}|=]+)(?:=([^{}]*))?\}")      # 수기 입�
 NUM_RE = re.compile(r"\{(숫자|금액):([^{}|=]+)(?:=([^{}]*))?\}")  # 숫자·금액 칸(값은 '입력:이름'에 담긴다)
 CALC_RE = re.compile(r"\{계산:([^{}=]+)=([^{}]+)\}")
 COMPLEX_RE = re.compile(r"\{단지:([^{}|=]+)\}")
+TYPE_RE = re.compile(r"\{유형:([^{}]+)\}")     # {유형:영구=제10조|국민·행복=제9조}: 기본정보의 임대유형에 맞는 글자만
 FIELD_RE = re.compile(r"\{([^{}:|]+)\}")
 COMPLEX_PREFIX = "단지:"
 # 단지기본정보 값(이름 → 값). 프로그램이 시작할 때와 단지기본정보를 저장할 때 set_complex로 채운다.
@@ -434,6 +435,24 @@ def _input_value(values: dict, name: str, default) -> str:
     return str(values[key] if key in values else (default or "")).strip()
 
 
+RENT_TYPES = ("국민임대", "영구임대", "행복주택", "공공임대", "도시공사")   # 기본정보의 임대유형
+_OLD_RENT = {"영구": "영구임대", "국민": "국민임대", "행복": "행복주택", "공공": "공공임대"}
+
+
+def normalize_rent_type(v) -> str:
+    """예전에 저장한 값(영구·국민·행복)을 지금 이름으로."""
+    v = str(v or "").strip()
+    return _OLD_RENT.get(v, v)
+
+
+def _type_sub(spec: str, rent_type: str) -> str:
+    """임대유형에 맞는 글자. 유형을 고르지 않았으면 모두 '값(유형)'으로 적는다."""
+    pairs = [x.split('=', 1) for x in spec.split('|') if '=' in x]
+    for keys, val in pairs:
+        if rent_type and rent_type in keys.split('·'):
+            return val.strip()
+    return ', '.join(f'{v.strip()}({k.strip()})' for k, v in pairs)
+
 def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> str:
     """{날짜:…}와 {이름} 등을 채운다. 값이 없는 빈칸은 그대로 둔다(미리보기에서 보이도록).
     {계산:…}은 여기서 계산한다. extras: 계산에만 쓰는 머리말 입력칸(처음 값을 쓰려고 받는다)."""
@@ -458,6 +477,7 @@ def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> st
     def complex_sub(m):
         return COMPLEX.get(m.group(1).strip(), "").strip() or m.group(0)
 
+    text = TYPE_RE.sub(lambda m: _type_sub(m.group(1), normalize_rent_type(values.get("임대유형"))), text)
     calcs = calcs_in(text)
     if calcs:
         results = compute(calcs, _calc_env([text] + list(extras or []), values))
