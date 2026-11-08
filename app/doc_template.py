@@ -599,7 +599,7 @@ def para_mark(left_pt: float, indent_pt: float) -> str:
 
 
 def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = False,
-            lead_w: float | None = None) -> str:
+            lead_w: float | None = None, cell: bool = False) -> str:
     """본문(또는 표 칸) 한 줄. 둘째 줄부터는 항목 기호 뒤 글자에 맞춰 줄이 바뀌게(내어쓰기) 한다.
     예) '  가. 무주택 …'  → 왼쪽 여백 = '  ' (한글 1자), 첫 줄 뒤 줄은 '가. ' 실제 너비만큼 더 들어간다.
     lead_w: 들여쓰기 너비를 직접 줄 때(붙임 둘째 줄을 '붙임  ' 뒤 열에 맞출 때).
@@ -612,7 +612,12 @@ def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = Fal
     head_w = _width_pt(head, pt)
     if hwp:
         # 웹한글은 &nbsp;를 보통 빈칸으로 바꿔 넣는다(한글 2020으로 확인) → 너비 계산과 맞는다
-        mark = para_mark(lead_w, -head_w) if lead_w or head_w else ""
+        # 웹한글의 굴림은 숫자·마침표·빈칸도 모두 반각(0.5em)으로 찍힌다 → 기호 폭은 칸 수로 계산
+        if cell:    # 표 칸은 지금 모양을 유지한다(적용 때 2배가 되므로 절반으로 넘긴다)
+            lead_w, head_w = lead_w / 2, head_w / 2
+        else:
+            head_w = _units(head) * pt / 2
+        mark = para_mark(lead_w, -head_w)   # 기호 없는 줄도 표식을 넣어 어절 단위 줄 나눔을 준다
         return _p(mark + (_line_html(stripped) or "&nbsp;"), "left", pt, lh=lh)
     return _p(escape(stripped) or "&nbsp;", "left", pt, left=lead_w + head_w, first=-head_w, lh=lh, pre=True)
 
@@ -692,7 +697,7 @@ def _table(lines: list[str], hwp: bool = False) -> str:
                         (f' rowspan="{rowspan}"' if rowspan > 1 else "")
             if align == "left":
                 # 왼쪽 정렬 칸은 줄마다 문단으로: 넘치는 줄이 □·*·- 기호 뒤 글자에 맞춰 바뀐다
-                body = "".join(_body_p(x, pt, CELL_LINE_HEIGHT, hwp) for x in parts)
+                body = "".join(_body_p(x, pt, CELL_LINE_HEIGHT, hwp, cell=True) for x in parts)
             else:
                 inner = "<br>".join(f'<span style="{f}"><font face="{FONT_FAMILY}">'
                                     f'{_line_html(x) or "&nbsp;"}</font></span>' for x in parts)

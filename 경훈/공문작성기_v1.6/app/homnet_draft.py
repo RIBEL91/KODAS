@@ -756,7 +756,8 @@ def apply_para_marks(driver, body_html: str, log) -> None:
     counts = Counter(m.group(0) for m in dtpl.PARA_MARK_RE.finditer(body_html))
     if not counts:
         return
-    marks = [[mk, int(m.group(1)), int(m.group(2))]
+    # [문단 모양]의 여백 값은 1pt = 200 (표식은 1pt = 100이라 2배로 넘긴다)
+    marks = [[mk, int(m.group(1)) * 2, int(m.group(2)) * 2]
              for mk in counts for m in [dtpl.PARA_MARK_RE.fullmatch(mk)]]
     try:
         res = json.loads(driver.execute_script(_JS_PARA_MARKS, marks) or "{}")

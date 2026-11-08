@@ -96,14 +96,14 @@ def test_hwp_html_uses_para_marks_not_css_margins():
     assert "margin-left" not in html and "text-indent" not in html
     hu = lambda pt: round(pt * 100)  # noqa: E731
     w = dtpl._width_pt
-    assert f"【문단:0:-{hu(w('1. '))}】1. 첫째" in html
-    assert f"【문단:1300:-{hu(w('가. '))}】가. 둘째" in html
-    assert f"【문단:1100:-{hu(w('* ', 11))}】* 미등기" in html      # 표 칸(11pt)
+    assert f"【문단:0:-{hu(dtpl._units('1. ') * 6.5)}】1. 첫째" in html
+    assert f"【문단:1300:-{hu(dtpl._units('가. ') * 6.5)}】가. 둘째" in html
+    assert f"【문단:550:-{hu(w('* ', 11) / 2)}】* 미등기" in html      # 표 칸(11pt)
     # 붙임: '붙임' 뒤와 2. 앞에 탭 표식(본문을 넣은 뒤 진짜 탭으로 바꾼다) → 1. 2.가 같은 탭 위치
     assert ">붙임【탭】1. 가 1부.<" in html and ">【탭】2. 나 1부. &nbsp;끝.<" in html
-    assert ">본문<" in html                                   # 기호·들여쓰기 없는 줄은 표식 없음
+    assert "【문단:0:0】본문<" in html                         # 기호 없는 줄도 어절 줄 나눔용 표식
     marks = dtpl.PARA_MARK_RE.findall(html)
-    assert len(marks) == 4                                     # 붙임 줄에는 문단 표식을 넣지 않는다
+    assert len(marks) == 5                                     # 붙임 줄에는 문단 표식을 넣지 않는다
 
 
 def test_bundled_templates_all_render():
