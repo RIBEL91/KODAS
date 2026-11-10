@@ -534,7 +534,9 @@ def leftovers(text: str) -> list[str]:
 
 FONT_FAMILY = "굴림"
 FONT_PT = 13
-TABLE_PT = 11          # 표 안 글자 크기(칸이 많은 표가 본문 폭에 들어가도록)
+TABLE_PT = 11          # 표 안 글자 크기(기본). 칸이 본문 폭에 안 들어가면 표 전체를 함께 줄인다
+TABLE_MIN_PT = 8       # 표 안 글자 최소 크기
+CELL_PAD_PT = 12       # 칸 좌우 안쪽 여백 + 테두리(웹한글 기본 칸 여백 포함)
 BODY_WIDTH_PT = 470    # A4 본문 폭 이내
 
 
@@ -620,6 +622,16 @@ def para_mark(left_pt: float, indent_pt: float) -> str:
     return f"【문단:{round(left_pt * 100)}:{round(indent_pt * 100)}】"
 
 
+# 웹한글은 HTML 표 칸의 '문단 끝' 글자 모양을 기본(함초롬바탕 10pt)으로 둔다. 그래서 칸 글자를 지우고
+# 새로 적으면 함초롬바탕으로 바뀐다. 표마다 첫 칸 앞에 이 표식을 넣고, 본문을 넣은 뒤 표 전체 칸을
+# 블록으로 잡아 굴림·표 글자 크기를 준다(homnet_draft.apply_table_fonts). 번호는 표 순서, 값은 pt.
+TABLE_MARK_RE = re.compile(r"【표:(\d+):(\d+)】")
+
+
+def table_mark(no: int, pt: int) -> str:
+    return f"【표:{no}:{pt}】"
+
+
 def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = False,
             lead_w: float | None = None, cell: bool = False) -> str:
     """본문(또는 표 칸) 한 줄. 둘째 줄부터는 항목 기호 뒤 글자에 맞춰 줄이 바뀌게(내어쓰기) 한다.
@@ -667,7 +679,7 @@ def _is_sep(line: str) -> bool:
     return bool(re.fullmatch(r"\|\s*-{3,}\s*\|?", line.strip()))
 
 
-def _table(lines: list[str], hwp: bool = False) -> str:
+def _table(lines: list[str], hwp: bool = False, no: int = 1) -> str:
     header_rows = 1
     rows: list[list[str]] = []
     for ln in lines:
@@ -679,24 +691,41 @@ def _table(lines: list[str], hwp: bool = False) -> str:
     for r in rows:
         r += [""] * (ncol - len(r))
 
-    # 칸 너비: 합치지 않은 칸 글자 수(가장 긴 줄, 상한 24) 비율로 나눈다.
-    weight = [4] * ncol
-    for r in rows:
-        for c, cell in enumerate(r):
-            if cell in ("^", "<"):
-                continue
-            if c + 1 >= ncol or r[c + 1] != "<":     # 합친 칸은 너비 계산에서 뺀다
-                longest = max((len(x.strip()) for x in cell.split("<br>")), default=0)
-                weight[c] = max(weight[c], min(longest, 24) + 2)
-    total = sum(weight)
-    widths = [max(28, round(BODY_WIDTH_PT * w / total)) for w in weight]
+    # 글자 크기: 표 하나는 한 크기(굴림)로 통일한다. TABLE_PT부터 1pt씩 줄여 가며
+    # 합치지 않은 칸의 글자가 줄바꿈 없이 본문 폭에 들어가는 가장 큰 크기를 고른다.
+    def need(pt: float, hard: bool) -> list[float]:
+        """hard=True: 꼭 필요한 폭(10자 이하 짧은 칸은 한 줄, 긴 글 칸은 한글 6자).
+        hard=False: 폭을 나눌 비율(긴 글 칸은 한글 13자까지)."""
+        w = [2 * pt] * ncol
+        for ri, r in enumerate(rows):
+            for c, cell in enumerate(r):
+                if cell in ("^", "<") or (c + 1 < ncol and r[c + 1] == "<"):   # 합친 칸은 빼고
+                    continue
+                parts = cell.split("<br>")
+                bold = 1.08 if ri < header_rows else 1.0
+                longest = max((_width_pt(x.strip(), pt) * bold for x in parts), default=0)
+                short = max(len(x.strip()) for x in parts) <= 10    # 숫자·짧은 이름은 한 줄로 둔다
+                cap = 13 * pt if not hard else (longest if short else 6 * pt)
+                w[c] = max(w[c], min(longest, cap))
+        return [x + CELL_PAD_PT for x in w]
+
+    pt = TABLE_PT
+    while pt > TABLE_MIN_PT and sum(need(pt, True)) > BODY_WIDTH_PT:
+        pt -= 1
+    hard, soft = need(pt, True), need(pt, False)
+    if sum(soft) <= BODY_WIDTH_PT or sum(hard) >= BODY_WIDTH_PT:
+        base = soft if sum(soft) <= BODY_WIDTH_PT else hard
+        widths = [round(BODY_WIDTH_PT * w / sum(base)) for w in base]   # 남는 폭은 비율대로 나눈다
+    else:   # 짧은 칸은 한 줄 폭을 지키고, 남는 폭은 긴 글 칸에 나눈다
+        extra = [s - h for s, h in zip(soft, hard)]
+        room = BODY_WIDTH_PT - sum(hard)
+        widths = [round(h + room * e / sum(extra)) for h, e in zip(hard, extra)]
 
     out = [f'<table align="center" border="1" cellspacing="0" cellpadding="4" '
            f'width="{sum(widths)}pt" style="border-collapse:collapse;margin:0 auto;'
            f'width:{sum(widths)}pt;">']
-    # 칸이 많은 표는 글자를 줄여 한 화면에 깔끔하게 들어가게 한다
-    pt = TABLE_PT if ncol <= 6 else 9 if ncol <= 9 else 8
     f = _font(pt)
+    marked = False
     for ri, r in enumerate(rows):
         head = ri < header_rows
         out.append("<tr>")
@@ -711,7 +740,9 @@ def _table(lines: list[str], hwp: bool = False) -> str:
                 rowspan += 1
             parts = [x for x in cell.split("<br>")]
             longest = max((len(x.strip()) for x in parts), default=0)
-            align = "center" if head or (longest <= 16 and len(parts) <= 3) else "left"
+            # 여러 칸을 합친 한 줄 제목(예: '2026년도 도시근로자 가구당 월평균 소득')도 가운데로
+            align = ("center" if head or (longest <= 16 and len(parts) <= 3)
+                     or (colspan > 1 and len(parts) == 1 and longest <= 30) else "left")
             w = sum(widths[c:c + colspan])
             bg = 'bgcolor="#e8e8e8" ' if head else ""
             bgs = "background:#e8e8e8;font-weight:bold;" if head else ""
@@ -724,6 +755,10 @@ def _table(lines: list[str], hwp: bool = False) -> str:
                 inner = "<br>".join(f'<span style="{f}"><font face="{FONT_FAMILY}">'
                                     f'{_line_html(x) or "&nbsp;"}</font></span>' for x in parts)
                 body = f'<p align="{align}" style="text-align:{align};margin:0;{f}">{inner}</p>'
+            if hwp and not marked:     # 첫 칸 앞에 표 글꼴 표식(apply_table_fonts가 지운다)
+                tag = f'<font face="{FONT_FAMILY}">'
+                body = body.replace(tag, tag + table_mark(no, pt), 1)
+                marked = True
             out.append(
                 f'<td{span_attr} align="{align}" valign="middle" width="{w}pt" {bg}'
                 f'style="width:{w}pt;text-align:{align};vertical-align:middle;'
@@ -742,13 +777,15 @@ TAB_MARK = "【탭】"
 def to_html(body: str, hwp: bool = False) -> str:
     """채운 본문 텍스트를 HTML로 바꾼다. hwp=True면 웹한글에 넣을 HTML(여백 대신 para_mark 표식)."""
     html, table = [], []
+    n_table = 0
     attach = None      # (칸 수, 실제 너비) — 바로 위 '붙임  '
     for line in body.split("\n") + [""]:
         if line.strip().startswith("|"):
             table.append(line)
             continue
         if table:
-            html.append(_table(table, hwp))
+            n_table += 1
+            html.append(_table(table, hwp, n_table))
             table = []
         # 붙임 둘째 줄부터('      2. …')는 서식 txt에서 빈칸으로 '붙임  ' 뒤 열에 맞춰 둔 것이므로
         # 빈칸 수 대신 '붙임  '의 실제 너비로 들여 써서 1. 2. 3.이 같은 열에 오게 한다

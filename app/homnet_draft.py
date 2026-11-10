@@ -686,6 +686,7 @@ def insert_body(driver, draft_handle: str, body_html: str, log, subcase: int = 0
     try:
         apply_para_marks(driver, body_html, log)
         apply_tab_marks(driver, body_html, log, target)
+        apply_table_fonts(driver, body_html, log)
     finally:
         driver.switch_to.default_content()
     return True
@@ -777,6 +778,56 @@ def apply_para_marks(driver, body_html: str, log) -> None:
         log(f"⚠️ 문단 {short}곳의 내어쓰기를 넣지 못해 빈칸으로 들여 썼습니다. {res.get('errs', '')}")
     else:
         log(f"✅ 문단 여백(내어쓰기) {sum(counts.values())}곳")
+
+
+# ---------------- 3-2. 표 글자 모양 ----------------
+# HTML로 넣은 표 칸은 '문단 끝' 글자 모양이 기본(함초롬바탕 10pt)이라, 칸 글자를 지우고 새로 적으면
+# 함초롬바탕으로 바뀐다. 표 첫 칸의 표식 【표:번호:pt】를 찾아 커서를 그 칸에 두고, 표 전체 칸을
+# 블록(F5 세 번)으로 잡아 [글자 모양] 굴림·크기를 준다. 표식은 끝에 모두 지운다.
+
+_JS_TABLE_FONTS = r"""
+var h = window.HwpCtrl, marks = arguments[0], face = arguments[1], out = {ok: 0, errs: []};
+var FACES = ['Hangul', 'Latin', 'Hanja', 'Japanese', 'Other', 'Symbol', 'User'];
+for (var k = 0; k < marks.length; k++) {
+  var mk = marks[k][0], pt = marks[k][1];
+  try {
+    h.MovePos(2);
+    var f = h.CreateAction('RepeatFind'), fs = f.CreateSet(); f.GetDefault(fs);
+    fs.SetItem('FindString', mk); fs.SetItem('IgnoreMessage', 1); fs.SetItem('Direction', 0);
+    var r = f.Execute(fs);
+    if (!r || String(r) === 'false' || String(r) === '0') { out.errs.push(mk + ' 못 찾음'); continue; }
+    h.Run('Cancel');                                  // 찾은 글자 선택만 풀고 커서는 첫 칸에 둔다
+    h.Run('TableCellBlock'); h.Run('TableCellBlockExtend'); h.Run('TableCellBlockExtend');
+    var a = h.CreateAction('CharShape'), s = a.CreateSet(); a.GetDefault(s);
+    for (var i = 0; i < FACES.length; i++) {
+      s.SetItem('FaceName' + FACES[i], face); s.SetItem('FontType' + FACES[i], 1);
+    }
+    s.SetItem('Height', pt * 100);
+    a.Execute(s);
+    h.Run('Cancel');
+    out.ok++;
+  } catch (e) { out.errs.push(mk + ' ' + e); try { h.Run('Cancel'); } catch (e2) {} }
+}
+return JSON.stringify(out);
+"""
+
+
+def apply_table_fonts(driver, body_html: str, log) -> None:
+    """표마다 모든 칸(문단 끝 포함)의 글자 모양을 굴림·표 글자 크기로 맞추고 표식을 지운다."""
+    import doc_template as dtpl
+    marks = [[m.group(0), int(m.group(2))] for m in dtpl.TABLE_MARK_RE.finditer(body_html)]
+    if not marks:
+        return
+    try:
+        res = json.loads(driver.execute_script(_JS_TABLE_FONTS, marks, dtpl.FONT_FAMILY) or "{}")
+    except Exception as ex:
+        res = {"ok": 0, "errs": [str(ex)]}
+    for mk, _pt in marks:
+        driver.execute_script(_JS_REPLACE_MARK, mk, "")
+    if res.get("errs"):
+        log(f"⚠️ 표 글자 모양을 일부 맞추지 못했습니다({res.get('ok', 0)}/{len(marks)}): {res['errs']}")
+    else:
+        log(f"✅ 표 글자 모양(굴림) {len(marks)}개")
 
 
 # ---------------- 4. 문서링크 ----------------

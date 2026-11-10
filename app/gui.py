@@ -28,6 +28,18 @@ VERSION = "1.3.0"
 FONT = ("맑은 고딕", 10)
 FONT_B = ("맑은 고딕", 10, "bold")
 ACCENT = ui_kit.PRIMARY_D   # 새 디자인: 파랑 계열(진한 쪽)
+# 달력(DateEntry) 색: 앱의 파랑 계열. 주말은 붉은 글씨, 다른 달 날짜는 옅게
+CAL_STYLE = dict(
+    locale="ko_KR", firstweekday="sunday", showweeknumbers=False, font=FONT,
+    background=ui_kit.PRIMARY, foreground="#ffffff", bordercolor=ui_kit.BORDER,
+    headersbackground=ui_kit.PRIMARY_SOFT, headersforeground=ui_kit.PRIMARY_D,
+    normalbackground="#ffffff", normalforeground=ui_kit.TEXT,
+    weekendbackground="#ffffff", weekendforeground=ui_kit.DANGER,
+    othermonthbackground="#f6f8fc", othermonthforeground=ui_kit.MUTED,
+    othermonthwebackground="#f6f8fc", othermonthweforeground="#e9a8a8",
+    selectbackground=ui_kit.PRIMARY, selectforeground="#ffffff",
+    disableddaybackground="#f6f8fc", disableddayforeground=ui_kit.MUTED,
+)
 ORANGE = ui_kit.PRIMARY     # 단추·제목 색(예전 이름 그대로)
 BROWN, SUB = ui_kit.TEXT, ui_kit.SUB   # 본문 글자, 설명 글자
 LINE = ui_kit.LINE          # 옅은 구분선
@@ -502,14 +514,12 @@ class App:
         right = tk.Frame(head, bg=bg)
         right.pack(side="right", padx=16)
         for text, cmd in (("←  뒤로가기", self._go_back), ("☰  서식 고르기", self._show_picker),
-                          ("⌂  처음 화면", self._go_home)):
+                          ("⌂  처음 화면", self._go_home), ("ⓘ  도움말", self._show_page_help)):
             self._text_button(right, text, cmd, bg=bg).pack(side="left", padx=(12, 0))
         mid = tk.Frame(head, bg=bg)
         mid.pack(side="left", padx=6, pady=6)
         self.header_title = tk.Label(mid, text="공문 작성", font=("맑은 고딕", 16, "bold"), bg=bg, fg=BROWN)
         self.header_title.pack(anchor="w")
-        tk.Label(mid, text="이름·날짜를 넣고 확인한 뒤 [홈넷에 자동 작성]을 누르세요",
-                 font=("맑은 고딕", 9), bg=bg, fg=SUB).pack(anchor="w")
 
     @staticmethod
     def _text_button(parent, text, command, bg="white"):
@@ -741,8 +751,6 @@ class App:
         self.auto_btn = self._orange_button(bottom, "홈넷에 자동 작성  ▶", self._create_draft, big=True)
         self.auto_btn.pack(side="right")
         ttk.Button(bottom, text="브라우저로 미리보기", command=self._open_preview).pack(side="right", padx=8)
-        ttk.Label(bottom, foreground="#555", text="표준기안문에 제목·수신자·본문을 넣고 멈춥니다. "
-                                                  "[결재올림]은 확인 후 직접 눌러 주세요.").pack(side="left")
         ttk.Separator(tab).pack(side="bottom", fill="x")
 
         pane = ttk.PanedWindow(tab, orient="horizontal")
@@ -771,7 +779,7 @@ class App:
         right = ttk.Frame(pane)
         pane.add(right, weight=5)
         # 입력칸이 길어져도(2안·3안 …) 아래 '2. 확인하기'가 밀려나지 않게, 높이를 제한하고 스크롤한다
-        box = ttk.LabelFrame(right, text="1. 이름·날짜 넣기   (빨간 * 칸은 꼭 넣어 주세요)")
+        box = ttk.LabelFrame(right, text="1. 이름·날짜 넣기")
         box.pack(fill="x", padx=4, pady=(0, 6))
         bg = ttk.Style(self.root).lookup("TFrame", "background") or "#fafafa"
         self.inputs_canvas = cv = tk.Canvas(box, highlightthickness=0, bd=0, bg=bg, height=10)
@@ -945,9 +953,9 @@ class App:
 
     def _build_option_rows(self, parent, row: int, t: dtpl.Template) -> int:
         """체크박스(2안·3안 …)와 안마다 수신자 엑셀 고르기."""
-        ttk.Label(parent, text="함께 작성할 소명 안내문 — 체크한 순서대로 2안, 3안 …이 되고, "
-                               "안마다 고른 엑셀 명단이 그 안의 수신자가 됩니다",
-                  font=FONT_B, wraplength=int(600 * self.k), justify="left").grid(
+        self._help("함께 작성할 소명 안내문: 체크한 순서대로 2안, 3안 …이 되고, "
+                   "안마다 [📎 고르기]로 고른 엑셀 명단이 그 안의 수신자가 됩니다.")
+        ttk.Label(parent, text="함께 작성할 소명 안내문", font=FONT_B).grid(
             row=row, column=0, columnspan=6, sticky="w", padx=8, pady=(6, 2))
         row += 1
         picked = [d.file_name for d in self._picked_options(t)]
@@ -1027,6 +1035,8 @@ class App:
         self.name_entry = self.addr_entry = None
         self.auto_label = None
         self.required = []      # (이름표, 입력칸) — 꼭 넣어야 하는 칸. 비어 있으면 이름표가 빨갛다
+        self.help_lines = []    # 화면에 쓰지 않고 [ⓘ 도움말]에 모아 보여 줄 설명
+        self._help("빨간 * 표시 칸은 꼭 넣어야 합니다.")
 
         # 맨 위 따로 한 줄: 소명대상 없음 — 체크하면 안내문(선택안)을 모두 빼고 1안 제목 끝에 표시한다
         if t.none_label:
@@ -1038,10 +1048,8 @@ class App:
             tk.Checkbutton(bar, variable=self.none_var, command=self._on_none_toggle, text=t.none_label,
                            bg=bar["bg"], activebackground=bar["bg"], fg=BROWN, selectcolor="white",
                            font=FONT_B, bd=0, highlightthickness=0, cursor="hand2").pack(side="left", padx=10, pady=6)
-            tk.Label(bar, bg=bar["bg"], fg=BROWN if none else SUB, font=("맑은 고딕", 9),
-                     text=f"안내문 없이 1안만 작성하고, 제목 끝에 '{t.none_label}'을 붙입니다" if none else
-                     f"이번 달 소명할 세대가 없으면 체크하세요 (1안 제목 끝에 '{t.none_label}')").pack(
-                side="left", padx=(4, 10))
+            self._help(f"[{t.none_label}]: 이번 달 소명할 세대가 없으면 체크하세요. "
+                       f"안내문 없이 1안만 작성하고, 1안 제목 끝에 '{t.none_label}'을 붙입니다.")
             r += 1
 
         # '1안:'이 있는 서식은 내부결재 1안 + 이 서식 2안으로 한 번에 작성한다. 예: 갱신계약 안내
@@ -1056,9 +1064,7 @@ class App:
             r += 1
 
         if t.memo:
-            ttk.Label(f, text=f"📝 {t.memo}", foreground="#7a5b00", wraplength=int(640 * self.k),
-                      justify="left").grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 2))
-            r += 1
+            self._help(f"📝 {t.memo}")
 
         if t.options:      # 2안·3안 …으로 붙일 선택안 고르기
             r = self._build_option_rows(f, r, t)
@@ -1089,8 +1095,8 @@ class App:
             self.name_entry.bind("<KeyRelease>", lambda _e: self._refresh())
             if not self._overlay_shown():     # 처음 화면 검색칸 등에서 커서를 빼앗지 않게
                 self.name_entry.focus_set()
-            ttk.Label(side, text="여러 명이면 쉼표로 (예: 홍길동, 김철수)" if "상속인" in sender.receiver else "",
-                      foreground="#777").pack(side="left", padx=8)
+            if "상속인" in sender.receiver:
+                self._help(f"{label}: 여러 명이면 쉼표로 나눠 적습니다 (예: 홍길동, 김철수).")
             r += 1
         if uses("주소") and not by_excel:
             ttk.Label(f, text="동·호 (주소)").grid(row=r, column=0, sticky="e", padx=8, pady=4)
@@ -1098,8 +1104,7 @@ class App:
             self.addr_entry.grid(row=r, column=1, sticky="w", padx=4)
             self.addr_entry.insert(0, old_values.get("주소", ""))
             self.addr_entry.bind("<KeyRelease>", lambda _e: self._refresh())
-            ttk.Label(f, text="예: 101동 1001호  (비워도 됩니다)", foreground="#777").grid(
-                row=r, column=2, columnspan=3, sticky="w")
+            self._help("동·호 (주소): 예) 101동 1001호. 비워도 됩니다.")
             r += 1
 
         from tkcalendar import DateEntry
@@ -1126,15 +1131,13 @@ class App:
             if is_month_field(label, style):
                 de = MonthEntry(f, command=self._refresh)
             else:
-                de = DateEntry(f, width=12, locale="ko_KR", date_pattern="yyyy-mm-dd",
-                               firstweekday="sunday", showweeknumbers=False,
-                               selectbackground=ACCENT, font=FONT)
+                de = DateEntry(f, width=12, date_pattern="yyyy-mm-dd", **CAL_STYLE)
                 de.bind("<<DateEntrySelected>>", lambda _e: self._refresh())
                 de.bind("<KeyRelease>", lambda _e: self._refresh())
             de.set_date(old_dates.get(label) or default_date(label, today))
             de.grid(row=rr, column=cc + 1, sticky="w", padx=4)
-            hint = "작성일부터 2주" if "기한" in label else ""
-            ttk.Label(f, text=hint, foreground="#999").grid(row=rr, column=cc + 2, sticky="w")
+            if "기한" in label:
+                self._help(f"{label}: 작성일부터 2주 뒤 날짜가 미리 들어갑니다. ▼를 눌러 달력에서 바꿀 수 있습니다.")
             self.date_widgets[label] = de
         r += (len(fields) + 1) // 2
         # {입력:항목} 수기 입력 칸(두 칸씩 한 줄)
@@ -1154,38 +1157,40 @@ class App:
         else:
             tip = ""
         if tip:
-            # 긴 안내문이 칸 너비를 밀어 입력칸을 화면 밖으로 내보내지 않게 줄바꿈한다
-            ttk.Label(f, text=tip, foreground="#777", wraplength=int(560 * self.k), justify="left").grid(
-                row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 0))
-            r += 1
+            self._help(tip)
         # 수기 입력 칸은 한 줄에 하나씩(이름 칸 아래 같은 열) — 버튼·안내가 옆 칸을 밀지 않게
         for label in inputs:
             lb = ttk.Label(f, text="* " + label, font=FONT_B)
             lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
             box = ttk.Frame(f)
             box.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
-            e = ttk.Entry(box, width=18)
+            is_date = label.endswith("일") and kinds.get(label) not in ("금액", "숫자")
+            if is_date:     # 날짜 칸: ▼를 누르면 달력. '2026. 10. 8.' 꼴로 들어가고 직접 적어도 된다
+                e = DateEntry(box, width=14, date_pattern="y. m. d.", **CAL_STYLE)
+                e.bind("<<DateEntrySelected>>", lambda _e: self._refresh())
+                e.delete(0, "end")
+            else:
+                e = ttk.Entry(box, width=18)
             self.required.append((lb, e))
-            e.insert(0, old_values.get("입력:" + label, defaults.get(label, "")))
+            e.insert(0, old_values.get("입력:" + label, defaults.get(label, ""))
+                     or (dtpl.fmt_date(today, "일") if is_date else ""))
             e.pack(side="left")
             e.bind("<KeyRelease>", lambda _e: self._refresh())
             self.text_widgets[label] = e
             if label == "차수" and ("자격검색요청일" in inputs or "검색결과통보일" in self.date_widgets
                                   or self.found_labels):
                 # 차수를 넣으면 기록물등록대장에서 결과 통보 문서를 찾아 요청일·통보일을 채운다
-                ttk.Label(box, text="숫자만 적고 Enter (예: 34) — 그 차수 공문을 홈넷에서 찾아 "
-                                    "관련 문서 링크와 날짜를 자동으로 넣습니다",
-                          foreground="#777").pack(side="left", padx=8)
+                self._help("차수: 숫자만 적고 Enter (예: 34) — 그 차수 공문을 홈넷에서 찾아 "
+                           "관련 문서 링크와 날짜를 자동으로 넣습니다.")
                 e.bind("<Return>", lambda _e: self._lookup_round())    # 칸을 벗어나는 것만으로는 찾지 않는다
             elif label == "차수":
-                ttk.Label(box, text="숫자만 적어 주세요 (예: 34)", foreground="#777").pack(side="left", padx=8)
+                self._help("차수: 숫자만 적어 주세요 (예: 34).")
             elif kinds.get(label) == "금액":
-                ttk.Label(box, text="숫자만 (예: 113560 → 금113,560원(금일십일만…))",
-                          foreground="#999").pack(side="left", padx=8)
+                self._help(f"{label}: 숫자만 적습니다 (예: 113560 → 금113,560원(금일십일만…)).")
             elif kinds.get(label) == "숫자":
-                ttk.Label(box, text="숫자", foreground="#999").pack(side="left", padx=8)
-            elif label.endswith("일"):
-                ttk.Label(box, text="예: 2026. 10. 8.", foreground="#999").pack(side="left", padx=8)
+                self._help(f"{label}: 숫자만 적습니다.")
+            if is_date:
+                self._help(f"{label}: ▼를 눌러 달력에서 고르거나 직접 적습니다 (예: 2026. 10. 8.).")
             r += 1
         if self.auto_dates or self.found_labels:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
@@ -1304,6 +1309,8 @@ class App:
     # ---------- 홈넷 수신자 업로드 엑셀 ----------
     def _build_upload_row(self, parent, row: int):
         """여러 명에게 보낼 때: 홈넷 수기입력 [업로드]에 올릴 엑셀을 고른다."""
+        self._help("수신자 엑셀 업로드: 여러 명에게 보낼 때 홈넷 [샘플 다운로드] 양식으로 작성한 엑셀을 고릅니다. "
+                   "자동 작성 때 홈넷 수기입력 [업로드]로 올립니다.")
         ttk.Label(parent, text="수신자 엑셀 업로드").grid(row=row, column=0, sticky="e", padx=8, pady=4)
         box = ttk.Frame(parent)
         box.grid(row=row, column=1, columnspan=5, sticky="w", padx=4)
@@ -1344,12 +1351,11 @@ class App:
             return
         if path:
             n = f" ({self.upload_count}세대)" if self.upload_count is not None else ""
-            self.upload_label.config(text=f"✅ {os.path.basename(path)}{n} — 자동 작성 때 홈넷 수기입력 [업로드]로 올립니다",
+            self.upload_label.config(text=f"✅ {os.path.basename(path)}{n}",
                                      foreground="#1a7f37")
             self.upload_clear.pack(side="left")
         else:
-            self.upload_label.config(text="여러 명에게 보낼 때 (홈넷 [샘플 다운로드] 양식으로 작성한 엑셀)",
-                                     foreground="#777")
+            self.upload_label.config(text="")
             self.upload_clear.pack_forget()
         if refresh:
             self._refresh()
@@ -1483,8 +1489,7 @@ class App:
                 start = end
             self.mode_btn.config(text="✔ 고치기 끝 (본문 닫기)")
             self.save_btn.pack(side="left", padx=6, after=self.mode_btn)
-            self.mode_hint.config(text="파란 글씨 { } 는 위에 넣은 이름·날짜로 바뀌는 자리입니다. "
-                                       "표는 | 로 칸을 나눕니다.")
+            self.mode_hint.config(text="")
         else:
             t.body = self.preview.get("1.0", "end").rstrip("\n")
             self.edit_mode = False
@@ -1494,7 +1499,7 @@ class App:
             self.preview_box.pack_configure(fill="x", expand=False)
             self._fit_inputs()
             self._refresh()
-            self.mode_hint.config(text="고친 내용은 이번 작성에 쓰입니다. 계속 쓰려면 [고친 내용을 서식에 저장].")
+            self.mode_hint.config(text="")
 
     def _save_template(self):
         t = self.current
@@ -1906,6 +1911,52 @@ class App:
             "  이름·동호수·연락처가 공문 쓸 때 넣는 칸이 됩니다. 보안 문서는 홈넷 비밀번호로 열어 봅니다.\n"
             "  받는 동안 뜨는 작은 창의 [■ 그만 받기]를 누르면 지금 문서까지만 받고 멈춥니다.\n\n"
             "※ 브라우저 창은 작성이 끝날 때까지 닫지 마세요."))
+
+    def _help(self, text: str) -> None:
+        if text not in self.help_lines:
+            self.help_lines.append(text)
+
+    def _show_page_help(self):
+        """머리 [ⓘ 도움말]: 공문 작성 화면이면 이 공문의 설명을 한 번에, 아니면 사용 방법."""
+        t = self.current
+        if self._overlay_shown() or t is None:
+            self._show_help()
+            return
+        old = getattr(self, "help_win", None)
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        win = self.help_win = tk.Toplevel(self.root)
+        win.title("도움말")
+        win.transient(self.root)
+        win.configure(bg="white")
+        tk.Label(win, text=f"ⓘ  {t.label}", font=("맑은 고딕", 12, "bold"), bg="white", fg=BROWN,
+                 anchor="w", justify="left", wraplength=int(560 * self.k)).pack(fill="x", padx=18, pady=(14, 6))
+        txt = tk.Text(win, wrap="word", font=FONT, bg="white", relief="flat", bd=0,
+                      width=70, height=1, padx=4, spacing1=3, spacing3=3)
+        txt.pack(fill="both", expand=True, padx=14)
+        txt.tag_configure("h", font=FONT_B, foreground=ACCENT, spacing1=10)
+        txt.tag_configure("li", lmargin1=8, lmargin2=22)
+        txt.insert("end", "이 공문 넣는 법\n", "h")
+        for line in self.help_lines:
+            txt.insert("end", "•  " + line + "\n", "li")
+        txt.insert("end", "확인하고 작성하기\n", "h")
+        for line in ("[✏ 본문 직접 고치기]를 누르면 본문이 열립니다. 파란 글씨 { } 는 위에 넣은 이름·날짜로 "
+                     "바뀌는 자리이고, 표는 | 로 칸을 나눕니다.",
+                     "고친 내용은 이번 작성에만 쓰입니다. 계속 쓰려면 [고친 내용을 서식에 저장]을 누릅니다.",
+                     "[홈넷에 자동 작성]은 표준기안문에 제목·수신자·본문을 넣고 멈춥니다. "
+                     "[결재올림]은 확인 후 직접 눌러 주세요.",
+                     "브라우저 창은 작성이 끝날 때까지 닫지 마세요."):
+            txt.insert("end", "•  " + line + "\n", "li")
+        txt.update_idletasks()
+        rows = txt.count("1.0", "end", "displaylines")
+        rows = rows[0] if isinstance(rows, tuple) else (rows or 20)
+        txt.config(height=min(28, rows + 1), state="disabled")
+        ttk.Button(win, text="닫기", command=win.destroy).pack(pady=(4, 12))
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + self.root.winfo_width() - win.winfo_width() - 40
+        win.geometry(f"+{max(0, x)}+{self.root.winfo_rooty() + 60}")
+        win.focus_set()
 
     def _show_template_help(self):
         messagebox.showinfo("서식 만드는 법", (

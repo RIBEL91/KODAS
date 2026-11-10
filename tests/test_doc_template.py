@@ -229,3 +229,12 @@ def test_rent_type_shows_only_matching_clause():
     all_clauses = "조건 제10조(영구임대), 제9조(국민임대·공공임대·행복주택)에 따라"
     assert dtpl.fill(t, {}, {}) == all_clauses
     assert dtpl.fill(t, {"임대유형": "도시공사"}, {}) == all_clauses
+
+
+def test_hwp_html_marks_each_table_once_with_font_size():
+    body = "1. 표\n| 가 | 나 |\n| 1 | 2 |\n\n2. 둘째\n| 다 | 라 |\n| 3 | 4 |"
+    html = dtpl.to_html(body, hwp=True)
+    marks = dtpl.TABLE_MARK_RE.findall(html)
+    assert [m[0] for m in marks] == ["1", "2"]
+    assert all(int(pt) == dtpl.TABLE_PT for _, pt in marks)
+    assert not dtpl.TABLE_MARK_RE.search(dtpl.to_html(body))     # 미리보기에는 표식이 없다
