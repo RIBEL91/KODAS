@@ -242,6 +242,9 @@ def calcs_in(text: str) -> dict[str, str]:
     return {m.group(1).strip(): m.group(2).strip() for m in CALC_RE.finditer(text)}
 
 
+EXTERNAL_RECEIVER = "외부유통문서"
+
+
 @dataclass
 class Template:
     path: str
@@ -260,6 +263,7 @@ class Template:
     order: int = 0          # 묶음 안 차례(0이면 파일 번호 차례)
     extras: list = field(default_factory=list)   # 본문에 안 나오고 계산에만 쓰는 입력칸(머리말 '입력:')
     carry: list = field(default_factory=list)    # 작성 후 다음 기본값으로 넘길 값 [(받을 칸, 줄 칸)]
+    external_receiver: bool = False   # 머리말 '수신자찾기: 외부유통문서' — 수신자를 외부유통문서에서 검색해 넣는다
 
     @property
     def _number(self) -> str:
@@ -358,7 +362,8 @@ def parse(text: str, path: str = "") -> Template:
                     options=[x.strip() for x in meta.get("선택안", "").split(";") if x.strip()],
                     none_label=meta.get("없음표시", ""), bundle=meta.get("묶음", ""),
                     order=int(meta["순서"]) if meta.get("순서", "").isdigit() else 0,
-                    extras=extras, carry=carry)
+                    extras=extras, carry=carry,
+                    external_receiver=meta.get("수신자찾기", "") == EXTERNAL_RECEIVER)
 
 
 def load(path: str) -> Template:
@@ -383,6 +388,8 @@ def dump(t: Template) -> str:
     head = [f"제목: {t.title}", f"수신자: {t.receiver}", f"구분: {t.group}"]
     if t.name_hint:
         head.append(f"이름칸: {t.name_hint}")
+    if t.external_receiver:
+        head.append(f"수신자찾기: {EXTERNAL_RECEIVER}")
     if t.first:
         head.append(f"1안: {t.first}")
     if t.memo:

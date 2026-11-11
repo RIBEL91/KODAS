@@ -77,6 +77,15 @@ def default_date(label: str, today: dt.date) -> dt.date:
     return today + dt.timedelta(days=14) if "기한" in label else today
 
 
+def saved_month(months, file_name: str) -> dt.date | None:
+    """서식별로 저장해 둔 달('YYYY-MM')을 그 달 1일로. 없거나 깨졌으면 None."""
+    try:
+        year, month = months[file_name].split("-")
+        return dt.date(int(year), int(month), 1)
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return None
+
+
 def month_end(d: dt.date) -> dt.date:
     nxt = (d.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
     return nxt - dt.timedelta(days=1)
@@ -733,6 +742,7 @@ class App:
                   "roster_path": self.roster_path,
                   "complex_info": self.cfg.get("complex_info", {}),
                   "window": self.cfg.get("window", ""),
+                  "renewal_months": self.cfg.get("renewal_months", {}),
                   **self._info_values()}
         try:
             settings_store.save(values, self.remember.get())
@@ -947,6 +957,8 @@ class App:
 
     def _upload_for(self, d: dtpl.Template) -> str:
         """그 안의 수신자 엑셀. 선택안은 안마다 따로, 나머지는 공통 하나."""
+        if d.external_receiver:     # 다른 서식에서 고른 엑셀이 이 서식에 쓰이면 안 된다
+            return ""
         if d.file_name in self.option_docs and d is self.option_docs[d.file_name]:
             return self.option_uploads.get(d.file_name, "")
         return self.upload_path
@@ -1097,6 +1109,9 @@ class App:
                 self.name_entry.focus_set()
             if "상속인" in sender.receiver:
                 self._help(f"{label}: 여러 명이면 쉼표로 나눠 적습니다 (예: 홍길동, 김철수).")
+            if sender.external_receiver:
+                self._help(f"{label}: 자동 작성 때 홈넷 수신자 탭의 외부유통문서에서 전남광주통합특별시를 펼쳐 "
+                           "그 아래 이 기관을 추가합니다. 예) 전남광주통합특별시남구 또는 남구")
             r += 1
         if uses("주소") and not by_excel:
             ttk.Label(f, text="동·호 (주소)").grid(row=r, column=0, sticky="e", padx=8, pady=4)
@@ -1134,7 +1149,8 @@ class App:
                 de = DateEntry(f, width=12, date_pattern="yyyy-mm-dd", **CAL_STYLE)
                 de.bind("<<DateEntrySelected>>", lambda _e: self._refresh())
                 de.bind("<KeyRelease>", lambda _e: self._refresh())
-            de.set_date(old_dates.get(label) or default_date(label, today))
+            last = saved_month(self.cfg.get("renewal_months"), t.file_name) if label == "갱신월" else None
+            de.set_date(old_dates.get(label) or last or default_date(label, today))
             de.grid(row=rr, column=cc + 1, sticky="w", padx=4)
             if "기한" in label:
                 self._help(f"{label}: 작성일부터 2주 뒤 날짜가 미리 들어갑니다. ▼를 눌러 달력에서 바꿀 수 있습니다.")
@@ -1196,7 +1212,8 @@ class App:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
             self.auto_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
             r += 1
-        if not sender.internal and not t.options:   # 선택안이 있으면 안마다 위에서 고른다
+        # 선택안이 있으면 안마다 위에서 고르고, 외부유통문서에서 찾는 서식은 엑셀을 쓰지 않는다
+        if not sender.internal and not t.options and not sender.external_receiver:
             self._build_upload_row(f, r)
             r += 1
         if not uses("이름") and not uses("주소") and not fields and not inputs and not t.internal:
@@ -1594,7 +1611,7 @@ class App:
                 for link in links:      # 관련 문서번호 자리는 홈넷 [문서링크]로 넣는다
                     b = b.replace(link.fallback, link.mark, 1)
                 parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b, hwp=True), up,
-                                                    doc_links=links))
+                                                    doc_links=links, external_receiver=d.external_receiver))
         except ValueError as ex:
             messagebox.showwarning("확인", str(ex))
             return
@@ -1624,9 +1641,12 @@ class App:
             return homnet_draft.create_drafts(self.driver, parts, log=self.log, notify=notify)
 
         values_now = self._values()[0]
+        file_name = self.current.file_name
+        renewal = dates.get("갱신월") if "갱신월" in self.date_widgets else None
 
         def ok(todo):
             self._write_history(title, receiver, "작성완료(상신 전)")
+            self._remember_renewal(file_name, renewal)
             self._carry_over(docs, values_now)
             steps = "\n".join(f"{i}. {s}" for i, s in enumerate(todo, 1))
             self.log("✅ 표준기안문 작성을 마쳤습니다. 브라우저에서 확인하세요.")
@@ -1638,6 +1658,13 @@ class App:
                                              "직접 붙여 넣을 수도 있습니다.")
 
         self.run_bg(work, ok, err)
+
+    def _remember_renewal(self, file_name: str, month: dt.date | None) -> None:
+        """작성을 마친 공문의 갱신월을 서식별로 저장한다. 다음에 그 서식을 열면 이 달이 들어간다."""
+        if month is None:
+            return
+        self.cfg.setdefault("renewal_months", {})[file_name] = f"{month:%Y-%m}"
+        self._save_settings()
 
     def _carry_over(self, docs: list, values: dict) -> list[str]:
         """서식 머리말 '이월: 받을칸 <- 줄칸'대로 이번 값을 다음 작성 때 처음 값으로 서식에 저장한다.

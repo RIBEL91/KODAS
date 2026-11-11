@@ -385,11 +385,107 @@ return [i, typeof m_nCurSubCase === 'undefined' ? -1 : Number(m_nCurSubCase), fn
 """
 
 
-def set_receiver(driver, docinfo: str, receiver: str, log, upload_path: str = "",
-                 subcase: int = 0) -> None:
-    """결재선 창 → 수신자 탭 → '수기입력'으로 수신자를 넣고 [확인]한다.
+EXTERNAL_REGION = "전남광주통합특별시"     # 외부유통문서 트리에서 펼칠 상위 기관
 
-    upload_path가 있으면 한 줄 입력 대신 [업로드]로 수신자 엑셀을 올린다.
+_JS_TREE_FIND = r"""
+var want = arguments[0], found = [];
+function walk(n) {
+  for (var i = 0; i < n.children.length; i++) {
+    var c = n.children[i];
+    if ((c.label || '').replace(/\s+/g, '') === want) found.push(c.id);
+    walk(c);
+  }
+}
+walk(ldapTree.tree.getRoot());
+return found;
+"""
+
+# 펼쳐서 읽어 온 바로 아래 기관들: [노드 ID, 이름, 맞춰 볼 이름들]
+_JS_TREE_CHILDREN = r"""
+var n = ldapTree.GetTreeNodeByID(arguments[0]), out = [];
+if (!n.expanded && !n.isLoading) n.expand();
+for (var i = 0; i < n.children.length; i++) {
+  var c = n.children[i], name = '';
+  try { name = ldapTree.GetQueryUserData(c.id, './name') || ''; } catch (e) {}
+  out.push([c.id, c.label, [c.label, name]]);
+}
+return out;
+"""
+
+
+def _squeeze(s: str) -> str:
+    return "".join(s.split())
+
+
+def external_target(wanted: str) -> str:
+    """입력한 기관명에서 트리에서 찾을 이름만 남긴다: '전남광주통합특별시남구' → '남구'."""
+    key = _squeeze(wanted)
+    return key.removeprefix(EXTERNAL_REGION) or key
+
+
+def pick_external_row(wanted: str, rows: list) -> list:
+    """목록에서 입력한 이름과 띄어쓰기만 빼고 똑같은 기관 한 곳을 고른다.
+    공문이 다른 기관으로 가면 안 되므로 없거나 여럿이면 고르지 않고 후보를 알린다."""
+    key = _squeeze(wanted)
+    same = [r for r in rows if any(_squeeze(x) == key for x in r[2] if x)]
+    if len(same) == 1:
+        return same[0]
+    if not rows:
+        raise DraftError(f"외부유통문서에서 '{wanted}'을(를) 찾지 못했습니다.")
+    if same:
+        names = ", ".join(r[1] for r in same[:8])
+        raise DraftError(f"외부유통문서에 '{wanted}'이(가) {len(same)}곳 있어 고르지 못했습니다. 후보: {names}")
+    similar = [r for r in rows if any(key in _squeeze(x) for x in r[2] if x)] or rows
+    names = ", ".join(r[1] for r in similar[:8])
+    raise DraftError(f"외부유통문서에 '{wanted}'과(와) 이름이 똑같은 기관이 없습니다. 비슷한 기관: {names}")
+
+
+def add_external_receiver(driver, wanted: str, log) -> None:
+    """수신자 탭 '외부유통문서' 트리에서 상위 기관을 펼쳐 그 아래 기관을 수신자로 추가한다."""
+    target = external_target(wanted)
+    regions, end = [], time.time() + 20      # 트리를 읽어 올 때까지 기다린다
+    while time.time() < end and not regions:
+        time.sleep(0.3)
+        _accept_alert(driver)
+        regions = driver.execute_script(_JS_TREE_FIND, EXTERNAL_REGION) or []
+    if len(regions) != 1:
+        _save_probe(driver, "recv_external_probe.html")
+        raise DraftError(f"외부유통문서 트리에서 '{EXTERNAL_REGION}'을(를) "
+                         f"{'찾지 못했습니다' if not regions else '하나로 정하지 못했습니다'}.")
+    rows, end = [], time.time() + 20
+    while time.time() < end and not rows:
+        msg = _accept_alert(driver)
+        if msg:
+            log(f"  트리 메시지: {msg}")
+        rows = driver.execute_script(_JS_TREE_CHILDREN, regions[0]) or []
+        if not rows:
+            time.sleep(0.3)
+    node, name, _ = pick_external_row(target, rows)
+    full = EXTERNAL_REGION + _squeeze(name)
+    if any(_squeeze(r).endswith(full) for r in driver.execute_script(_JS_RECV_ROWS) or []):
+        log(f"  - 수신자 '{full}': 이미 있음")
+        return
+    n0 = driver.execute_script("return recvList.GetListCount();")
+    driver.execute_script("AddRecvWithOrgTree('24', false, ldapTree.GetUserDataDOM(arguments[0]));", node)
+    n1, end = n0, time.time() + 5
+    while time.time() < end and n1 <= n0:
+        time.sleep(0.3)
+        msg = _accept_alert(driver)
+        if msg:
+            log(f"  수신자 추가 메시지: {msg}")
+        n1 = driver.execute_script("return recvList.GetListCount();")
+    if n1 <= n0:
+        _save_probe(driver, "recv_external_probe.html")
+        raise DraftError(f"외부유통문서의 '{EXTERNAL_REGION} {name}'을(를) 수신자로 추가하지 못했습니다.")
+    log(f"✅ 수신자(외부유통문서): {EXTERNAL_REGION} {name}")
+
+
+def set_receiver(driver, docinfo: str, receiver: str, log, upload_path: str = "",
+                 subcase: int = 0, external: bool = False) -> None:
+    """결재선 창 → 수신자 탭에서 수신자를 넣고 [확인]한다.
+
+    기본은 '수기입력' 한 줄 입력. upload_path가 있으면 [업로드]로 수신자 엑셀을 올리고,
+    external이면 '외부유통문서' 트리에서 기관을 찾아 추가한다.
     subcase: 수신자를 넣을 안(0이면 1안).
     """
     from selenium.webdriver.common.by import By
@@ -412,13 +508,17 @@ def set_receiver(driver, docinfo: str, receiver: str, log, upload_path: str = ""
             raise DraftError(f"결재선 창에서 {subcase + 1}안을 고르지 못했습니다({how}, 현재 {cur + 1}안).")
         log(f"  수신자 목록: {subcase + 1}안 선택")
     driver.execute_script(
-        "var i = RecvCombo.FindItemByID ? RecvCombo.FindItemByID('3') : -1;"
-        "RecvCombo.SetCurSel(i >= 0 ? i : 2); RecvCombo_changed();")
-    _wait(driver, lambda d: d.find_element(By.ID, "deptNameEdit").is_displayed(), 10,
-          "수신자 '수기입력' 칸이 열리지 않았습니다.")
+        "var i = RecvCombo.FindItemByID ? RecvCombo.FindItemByID(arguments[0]) : -1;"
+        "RecvCombo.SetCurSel(i >= 0 ? i : Number(arguments[0]) - 1); RecvCombo_changed();",
+        "2" if external else "3")
+    if not external:
+        _wait(driver, lambda d: d.find_element(By.ID, "deptNameEdit").is_displayed(), 10,
+              "수신자 '수기입력' 칸이 열리지 않았습니다.")
 
     rows = driver.execute_script(_JS_RECV_ROWS) or []
-    if upload_path:
+    if external:
+        add_external_receiver(driver, " ".join(receiver.split()), log)
+    elif upload_path:
         upload_receivers(driver, win, upload_path, log)
     elif any(text in r for r in rows):
         log(f"  - 수신자 '{text}': 이미 있음")
@@ -1036,6 +1136,7 @@ class DraftPart:
     body_html: str
     upload_path: str = ""       # 수신자 엑셀(수기입력 [업로드])
     doc_links: list = field(default_factory=list)   # 본문에 넣을 관련 문서 링크(본문의 각 표식 자리)
+    external_receiver: bool = False   # 수신자를 외부유통문서 트리에서 찾아 넣는다
 
 
 TAB_LI = "#tabHead li"
@@ -1118,16 +1219,19 @@ def _apply_docinfo(driver, docinfo: str, part: DraftPart, log, notify, subcase: 
     steps = []
     if upload_path or (receiver and receiver != "내부결재"):
         try:
-            set_receiver(driver, docinfo, receiver, log, upload_path, subcase)
+            set_receiver(driver, docinfo, receiver, log, upload_path, subcase, part.external_receiver)
         except (DraftError, WebDriverException) as ex:   # 창이 닫힌 경우 등도 사람에게 맡긴다
             msg = str(ex) if isinstance(ex, DraftError) else f"{type(ex).__name__}: {str(ex).splitlines()[0][:80]}"
             log(f"⚠️ 수신자 자동 입력 실패: {msg}")
             if docinfo not in driver.window_handles:
                 raise DraftError("결재정보 창이 닫혔습니다. 홈넷 화면에서 이어서 작성해 주세요.") from None
             _close_sancline(driver, docinfo)
-            steps.append(f"결재선 [설정] → 수신자 탭{f' → {subcase + 1}안' if subcase else ''} → 수기입력 → [업로드]: {upload_path}"
-                         if upload_path else
-                         f"결재선 [설정] → 수신자 탭 → 수기입력: {hand_receiver_text(receiver)}")
+            if part.external_receiver:
+                steps.append(f"결재선 [설정] → 수신자 탭 → 외부유통문서 → {EXTERNAL_REGION} 펼치기 → '{external_target(receiver)}' 선택 → [추가>>]")
+            else:
+                steps.append(f"결재선 [설정] → 수신자 탭{f' → {subcase + 1}안' if subcase else ''} → 수기입력 → [업로드]: {upload_path}"
+                             if upload_path else
+                             f"결재선 [설정] → 수신자 탭 → 수기입력: {hand_receiver_text(receiver)}")
     if info.binder:
         try:
             set_binder(driver, docinfo, info.binder, log)

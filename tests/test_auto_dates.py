@@ -29,6 +29,15 @@ def test_auto_date_rule():
     assert gui.default_date("제출기한", today) == dt.date(2026, 11, 8)
 
 
+def test_saved_month():
+    months = {"16_갱신.txt": "2026-11", "깨짐.txt": "11월", "숫자.txt": 11}
+    assert gui.saved_month(months, "16_갱신.txt") == dt.date(2026, 11, 1)
+    assert gui.saved_month(months, "없음.txt") is None
+    assert gui.saved_month(months, "깨짐.txt") is None
+    assert gui.saved_month(months, "숫자.txt") is None
+    assert gui.saved_month(None, "16_갱신.txt") is None
+
+
 def test_month_field():
     assert gui.is_month_field("갱신월", "월")
     assert gui.is_month_field("갱신월", "월만")
