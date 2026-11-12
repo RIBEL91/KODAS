@@ -50,6 +50,31 @@ def defaults() -> dict:
     return d
 
 
+# 단지명 하나로 관리소명·단지약칭을 만든다(예: 광주우산3 → 광주우산3관리소 · 우산3).
+REGIONS = ("서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원",
+           "충북", "충남", "전북", "전남", "경북", "경남", "제주")
+
+
+def _base(name: str) -> str:
+    name = re.sub(r"\s+", "", str(name or ""))
+    return name[:-2] if name.endswith("단지") and len(name) > 2 else name
+
+
+def office_name(complex_name: str) -> str:
+    """단지명 → 관리소명(문서번호 앞 이름). 광주우산3 → 광주우산3관리소"""
+    b = _base(complex_name)
+    return "" if not b else (b if b.endswith("관리소") else b + "관리소")
+
+
+def short_name(complex_name: str) -> str:
+    """단지명 → 단지 약칭(앞의 지역 이름을 뗀다). 광주우산3 → 우산3"""
+    b = _base(complex_name)
+    for r in REGIONS:
+        if b.startswith(r) and len(b) > len(r):
+            return b[len(r):]
+    return b
+
+
 def _num(s) -> float:
     s = re.sub(r"[^\d.]", "", str(s or ""))
     try:

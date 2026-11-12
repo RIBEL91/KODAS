@@ -47,11 +47,10 @@ SELECT_BG = ui_kit.PRIMARY_SOFT       # 목록에서 고른 줄
 LINK_KEYS = ("문서링크", "심사결과링크", "소명안내링크")   # 자동 작성 때 홈넷 [문서링크]로 채우는 칸
 TEXT_OPTS = dict(bg="white", relief="flat", borderwidth=0, highlightthickness=1,
                  highlightbackground="#e0e0e0", highlightcolor=ACCENT, padx=6, pady=4)
-INFO_FIELDS = [("관리소", "관리소명", "예: 가나관리소 (문서번호 앞에 붙는 이름)"),
-               ("단지명", "단지명", "예: 가나1단지"),
+INFO_FIELDS = [("단지명", "단지명", "예: 광주우산3 (관리소명·약칭은 자동)"),
                ("담당자", "담당자 이름", "예: 홍길동"),
                ("전화번호", "담당자 전화번호", "예: 031-000-0000"),
-               ("임대유형", "임대유형", "16·24번 공문에 해당 유형의 계약특수조건만 넣습니다")]
+               ("임대유형", "공급유형", "16·24번 계약특수조건과 {단지:공급유형}에 씁니다")]   # 저장 키는 예전 그대로
 RENT_TYPES = dtpl.RENT_TYPES
 
 
@@ -311,8 +310,8 @@ class App:
         import landing
         self.sidebar = landing.Sidebar(root, {"home": self._go_home, "write": self._show_write,
                                               "picker": self._show_picker, "history": self._show_history,
-                                              "settings": self._show_settings},
-                                       self.k, VERSION, profile=self._profile, on_profile=self._show_settings)
+                                              "complex": self._show_complex, "settings": self._show_settings},
+                                       self.k, VERSION, profile=self._profile, on_profile=self._show_complex)
         self.sidebar.pack(side="left", fill="y")
         self.main = tk.Frame(root, bg=style.lookup("TFrame", "background") or "#fafafa")
         self.main.pack(side="left", fill="both", expand=True)
@@ -323,6 +322,8 @@ class App:
         self.nb.pack(fill="both", expand=True, padx=12, pady=(10, 4))
         self._build_tab_account()
         self._build_tab_write()
+        # 환경 설정: 메뉴 자리는 남겨 두고 내용은 모두 단지기본정보로 옮겼다(빈 화면)
+        self.nb.add(ttk.Frame(self.nb), text="  환경 설정  ")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._drain)
         self._load_templates()
@@ -498,7 +499,7 @@ class App:
         f = tk.Menu(bar, tearoff=0)
         f.add_command(label="처음 화면으로", command=lambda: self._go_home())
         f.add_command(label="창 최대화 / 원래 크기 (F11)", command=self._toggle_maximize)
-        f.add_command(label="단지기본정보 (관리소·평형·업체·계정·결재정보)", command=self._show_settings)
+        f.add_command(label="단지기본정보 (관리소·평형·업체·계정·결재정보)", command=self._show_complex)
         f.add_separator()
         f.add_command(label="서식 폴더 열기", command=lambda: os.startfile(paths.template_dir()))
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
@@ -548,16 +549,23 @@ class App:
         b.bind("<Leave>", lambda _e: b.config(bg=ORANGE))
         return b
 
-    def _show_settings(self):
+    def _show_complex(self):
         """단지기본정보(감춰 둔 ① 탭: 관리소·단지·평형·업체·계정·결재정보). [뒤로가기]나 [저장하고 다음]으로 돌아온다."""
         self._hide_overlays()
         self.nb.select(0)
         self.header_title.config(text="단지기본정보")
+        self._nav("complex")
+
+    def _show_settings(self):
+        """환경 설정: 내용은 모두 단지기본정보로 옮겨 빈 화면만 남았다."""
+        self._hide_overlays()
+        self.nb.select(2)
+        self.header_title.config(text="환경 설정")
         self._nav("settings")
 
     def _go_back(self):
-        """한 단계 뒤로: 설정 화면이면 공문 작성으로, 공문 작성이면 기본정보 화면으로."""
-        if self.nb.index("current") == 0:
+        """한 단계 뒤로: 단지기본정보·환경 설정 화면이면 공문 작성으로, 공문 작성이면 기본정보 화면으로."""
+        if self.nb.index("current") in (0, 2):
             if self.current is None:
                 self._go_home()
                 return
@@ -647,8 +655,9 @@ class App:
         return e
 
     # ================= ① 단지기본정보 (예전 '환경 설정' + '단지기본정보' 창을 합친 화면) =================
-    # 관리소명·단지명은 관리소 정보 칸 하나로만 받고, 저장할 때 {단지:관리소명}·{단지:단지명}에도 같이 넣는다.
-    COMPLEX_SHARED = {"관리소명": "관리소", "단지명": "단지명"}     # 단지기본정보 키 → 관리소 정보 키
+    # 관리소명·단지명·단지약칭은 '단지명' 한 칸으로, 임대유형·공급유형은 '공급유형' 한 칸으로 받는다.
+    # 단지 항목 중 화면에 따로 두지 않고 위 칸에서 만들어 넣는 것들:
+    COMPLEX_SHARED = ("관리소명", "단지명", "단지약칭", "공급유형")
 
     def _scroll_area(self, parent):
         """세로로 긴 화면을 위한 스크롤 영역. 안쪽 Frame을 돌려준다."""
@@ -688,22 +697,30 @@ class App:
         info = ttk.LabelFrame(body, text="우리 관리소·단지 (처음 한 번만 입력 — 공문의 빈칸에 자동으로 들어갑니다)")
         info.pack(fill="x", padx=10, pady=(8, 4))
         self.info_entries = {}
-        shared_back = {v: k for k, v in self.COMPLEX_SHARED.items()}
-        for i, (key, label, hint) in enumerate(INFO_FIELDS):
-            if key == "임대유형":     # 고르는 칸
-                ttk.Label(info, text=label).grid(row=i, column=0, sticky="e", padx=8, pady=3)
+        r = 0
+        for key, label, hint in INFO_FIELDS:
+            if key == "임대유형":     # 공급유형(고르는 칸) — 계약특수조건과 {단지:공급유형}에 같이 쓴다
+                ttk.Label(info, text=label).grid(row=r, column=0, sticky="e", padx=8, pady=3)
                 cb = ttk.Combobox(info, values=RENT_TYPES, state="readonly", width=10)
-                cb.set(dtpl.normalize_rent_type(c.get(key)))
-                cb.grid(row=i, column=1, sticky="w", padx=4)
-                ttk.Label(info, text=hint, foreground="#777").grid(row=i, column=2, sticky="w")
+                old = dtpl.normalize_rent_type(c.get(key)) or dtpl.normalize_rent_type(cx_saved.get("공급유형"))
+                cb.set(old if old in RENT_TYPES else "")
+                cb.grid(row=r, column=1, sticky="w", padx=4)
+                ttk.Label(info, text=hint, foreground="#777").grid(row=r, column=2, sticky="w")
                 cb.bind("<<ComboboxSelected>>", lambda _e: self._refresh())
                 self.info_entries[key] = cb
+                r += 1
                 continue
-            default = c.get(key, "") or cx_saved.get(shared_back.get(key, ""), "")
-            self.info_entries[key] = self._row(info, i, label, default, hint=hint)
+            default = c.get(key, "") or (cx_saved.get("단지명", "") if key == "단지명" else "")
+            self.info_entries[key] = self._row(info, r, label, default, hint=hint)
             self.info_entries[key].bind("<KeyRelease>", lambda _e: self._refresh())
+            r += 1
+            if key == "단지명":      # 단지명에서 자동으로 만든 관리소명·약칭을 바로 보여 준다
+                self.derived_label = ttk.Label(info, foreground=ACCENT)
+                self.derived_label.grid(row=r, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 4))
+                self.info_entries[key].bind("<KeyRelease>", lambda _e: self._show_derived(), add="+")
+                r += 1
+        self._show_derived()
         self.complex_entries: dict[str, ttk.Entry] = {}
-        r = len(INFO_FIELDS)
         for key, label, _, hint in complex_info.BASIC:
             if key in self.COMPLEX_SHARED:
                 continue
@@ -773,13 +790,22 @@ class App:
         self.binder.grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
         ttk.Label(doc, text="비우면 홈넷 기본값 그대로", foreground="#777").grid(row=2, column=4, sticky="w")
 
+    def _show_derived(self):
+        name = self.info_entries["단지명"].get().strip()
+        self.derived_label.config(
+            text=f"→ 관리소명: {complex_info.office_name(name)}   ·   단지 약칭: {complex_info.short_name(name)}"
+            if name else "→ 관리소명·단지 약칭은 단지명으로 자동으로 만듭니다")
+
     def _complex_values(self) -> dict:
-        """화면의 단지 항목 + 관리소 정보의 관리소명·단지명 → settings.json의 complex_info."""
+        """화면의 단지 항목 + 단지명·공급유형에서 만든 값 → settings.json의 complex_info."""
         out = {k: e.get().strip() for k, e in self.complex_entries.items()}
         out["추가항목"] = self.complex_extra.get("1.0", "end-1c")
         info = self._info_values()
-        for ck, ik in self.COMPLEX_SHARED.items():
-            out[ck] = info.get(ik, "")
+        name = info.get("단지명", "")
+        out["단지명"] = name
+        out["관리소명"] = complex_info.office_name(name)
+        out["단지약칭"] = complex_info.short_name(name)
+        out["공급유형"] = info.get("임대유형", "") or (self.cfg.get("complex_info") or {}).get("공급유형", "")
         return out
 
     def _reset_complex(self):
@@ -813,7 +839,9 @@ class App:
         self.run_bg(session.tunnel_alive, ok)
 
     def _info_values(self) -> dict:
-        return {k: e.get().strip() for k, e in self.info_entries.items()}
+        v = {k: e.get().strip() for k, e in self.info_entries.items()}
+        v["관리소"] = complex_info.office_name(v.get("단지명", ""))     # {관리소}: 단지명으로 만든다
+        return v
 
     def _save_settings(self):
         if getattr(self, "complex_entries", None):
@@ -1351,7 +1379,7 @@ class App:
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
             messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
-            self.nb.select(0)
+            self._show_complex()
             return
         vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
         uses_review = getattr(self, "uses_review", False)
@@ -1677,7 +1705,7 @@ class App:
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
             messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
-            self.nb.select(0)
+            self._show_complex()
             return
         if self.found_labels and self.found[0] != self._round():
             # 검색결과통보일은 차수의 결과 통보 문서에서 가져오므로 먼저 찾는다
@@ -1779,11 +1807,6 @@ class App:
                 self._refresh()
         return done
 
-    # ================= 단지기본정보 =================
-    def _show_complex(self):
-        """예전 단지기본정보 창 → 이제 ① 단지기본정보 화면(환경 설정과 합침)을 연다."""
-        self._show_settings()
-
     def _write_history(self, title, receiver, status):
         path = os.path.join(paths.sub_dir("logs"), f"작성이력_{dt.date.today():%Y%m}.csv")
         new = not os.path.exists(path)
@@ -1804,7 +1827,7 @@ class App:
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
             messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
-            self._show_settings()
+            self._show_complex()
             return
         dlg = CollectDialog(self.root, self.area)
         self.root.wait_window(dlg)
