@@ -24,7 +24,7 @@ import roster
 import settings_store
 import ui_kit
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 FONT = ("맑은 고딕", 10)
 FONT_B = ("맑은 고딕", 10, "bold")
 ACCENT = ui_kit.PRIMARY_D   # 새 디자인: 파랑 계열(진한 쪽)
