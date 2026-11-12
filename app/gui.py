@@ -24,7 +24,7 @@ import roster
 import settings_store
 import ui_kit
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 FONT = ("맑은 고딕", 10)
 FONT_B = ("맑은 고딕", 10, "bold")
 ACCENT = ui_kit.PRIMARY_D   # 새 디자인: 파랑 계열(진한 쪽)
@@ -435,7 +435,10 @@ class App:
             self.picker.search_entry.icursor("end")
 
     def _pick_template(self, i: int):
-        """서식 고르기 화면에서 고른 서식을 열고, 기본정보 화면을 거쳐 ② 공문 작성 화면으로 간다."""
+        """서식 고르기 화면에서 고른 서식을 열고 ② 공문 작성 화면으로 간다.
+        기본정보 화면은 필수 칸(단지명·담당자)이 비어 있을 때(처음 쓸 때)만 거친다.
+        이미 넣었으면 바로 작성 화면으로 — 고칠 때는 [파일] → 단지기본정보."""
+        import landing
         self._hide_overlays()
         self._nav("write")
         self.search.set("")
@@ -444,6 +447,10 @@ class App:
             self.tree.selection_set(iid)
             self.tree.see(iid)
         info = {**self._info_values(), "homnet_id": self.homnet_id.get().strip(), "homnet_pw": self.homnet_pw.get()}
+        if all(str(info.get(k, "") or "").strip() for k in landing.InfoScreen.REQUIRED):
+            self.nb.select(1)
+            self._refresh()
+            return
         self._cover(self.info_screen)
         self.info_screen.show(self.templates[i].label if 0 <= i < len(self.templates) else "", info)
 
@@ -564,15 +571,13 @@ class App:
         self._nav("settings")
 
     def _go_back(self):
-        """한 단계 뒤로: 단지기본정보·환경 설정 화면이면 공문 작성으로, 공문 작성이면 기본정보 화면으로."""
+        """한 단계 뒤로: 단지기본정보·환경 설정 화면이면 공문 작성으로, 공문 작성이면 서식 고르기 화면으로."""
         if self.nb.index("current") in (0, 2):
             if self.current is None:
                 self._go_home()
                 return
             self.nb.select(1)
             self._nav("write")
-        elif self.current is not None and self.current in self.templates:
-            self._pick_template(self.templates.index(self.current))
         else:
             self._show_picker()
 
