@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [('C:/Users/주택관리공단/Documents/GitHub/KODAS/assets', 'assets'), ('C:/Users/주택관리공단/Documents/GitHub/KODAS/서식', '서식')]
+datas = [('C:/Users/우산3/Documents/GitHub/KODAS/assets', 'assets'), ('C:/Users/우산3/Documents/GitHub/KODAS/서식', '서식')]
 hiddenimports = ['babel.numbers']
 datas += collect_data_files('sv_ttk')
 datas += collect_data_files('babel')
@@ -10,8 +10,8 @@ hiddenimports += collect_submodules('selenium')
 
 
 a = Analysis(
-    ['C:/Users/주택관리공단/Documents/GitHub/KODAS/app/gui.py'],
-    pathex=['C:/Users/주택관리공단/Documents/GitHub/KODAS/app'],
+    ['C:/Users/우산3/Documents/GitHub/KODAS/app/gui.py'],
+    pathex=['C:/Users/우산3/Documents/GitHub/KODAS/app'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -43,5 +43,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:/Users/주택관리공단/Documents/GitHub/KODAS/assets/app.ico'],
+    icon=['C:/Users/우산3/Documents/GitHub/KODAS/assets/app.ico'],
 )
