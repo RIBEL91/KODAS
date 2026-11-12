@@ -157,6 +157,8 @@ class Sidebar(HitCanvas):
                          font=(FONT, fs(17, k), "bold"), fill=TEXT)
         self.create_text(lx + ls + 13 * k, ly + ls / 2 + 13 * k, anchor="w", text="공문 자동작성 시스템",
                          font=(FONT, fs(8.5, k, 8)), fill=SUB)
+        # 로고(KODAS)를 누르면 홈으로
+        self.add_hit((14 * k, ly - 6 * k, w - 14 * k, ly + ls + 6 * k), self.commands.get("home"))
 
         # 메뉴
         y = 112 * k
