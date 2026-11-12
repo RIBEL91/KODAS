@@ -1,6 +1,6 @@
 """새 디자인 화면들(샘플 그림 기준: 왼쪽 메뉴 + 옅은 파랑 바탕 + 흰 카드).
 
-- Sidebar: 왼쪽 메뉴(홈 · 공문 작성 · 서식 고르기 · 작성 이력 · 환경 설정)와 아래 관리소·담당자 카드.
+- Sidebar: 왼쪽 메뉴(홈 · 공문 작성 · 서식 고르기 · 작성 이력 · 단지기본정보)와 아래 관리소·담당자 카드.
 - Home(=Landing): 인사말, 파란 배너([새 공문 작성하기]), 분야 카드 4개, 통계 3개,
   오른쪽 바로가기·최근 작성 문서. 검색칸에 적으면 모든 분야의 서식을 찾아 아래로 펼쳐 보여 준다.
 - Picker: 그 분야의 서식을 '매월 작성' / '기타 공문'(매주 서식이 있으면 '매주 작성'도) 카드로 보여 준다.
@@ -104,7 +104,7 @@ def _fmt_time(s: str) -> str:
 # ======================================================================
 class Sidebar(HitCanvas):
     NAV = (("home", "홈", "home"), ("write", "공문 작성", "edit"), ("picker", "서식 고르기", "layers"),
-           ("history", "작성 이력", "history"), None, ("settings", "환경 설정", "settings"))
+           ("history", "작성 이력", "history"), None, ("settings", "단지기본정보", "building"))
 
     def __init__(self, parent, commands: dict, k: float, version: str = "", profile=None, on_profile=None):
         self.k = k
@@ -1006,7 +1006,7 @@ class InfoScreen(tk.Frame):
         ent_w = min(col_w - pad * 2, 380 * k)
         bottom = top
         sections = (("우리 관리소 정보", "공문 빈칸에 자동으로 들어갑니다", self.INFO, "building", "blue"),
-                    ("홈넷 계정", "VPN 계정은 환경 설정에서 넣습니다", self.ACCOUNT, "person", "violet"))
+                    ("홈넷 계정", "VPN 계정은 단지기본정보에서 넣습니다", self.ACCOUNT, "person", "violet"))
         for i, (title, note, fields, icon, tint) in enumerate(sections):
             x = mx + (i * (col_w + cgap) if two else 0)
             y = top if two or i == 0 else bottom + cgap

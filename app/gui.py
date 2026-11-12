@@ -498,8 +498,7 @@ class App:
         f = tk.Menu(bar, tearoff=0)
         f.add_command(label="처음 화면으로", command=lambda: self._go_home())
         f.add_command(label="창 최대화 / 원래 크기 (F11)", command=self._toggle_maximize)
-        f.add_command(label="계정·결재정보 설정 (VPN·공개여부·편철)", command=self._show_settings)
-        f.add_command(label="단지기본정보 (관리소명·평형·업체 — 월별·주별 서식)", command=self._show_complex)
+        f.add_command(label="단지기본정보 (관리소·평형·업체·계정·결재정보)", command=self._show_settings)
         f.add_separator()
         f.add_command(label="서식 폴더 열기", command=lambda: os.startfile(paths.template_dir()))
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
@@ -550,10 +549,10 @@ class App:
         return b
 
     def _show_settings(self):
-        """계정·결재정보 설정(감춰 둔 ① 탭). [뒤로가기]나 [저장하고 다음]으로 공문 작성에 돌아온다."""
+        """단지기본정보(감춰 둔 ① 탭: 관리소·단지·평형·업체·계정·결재정보). [뒤로가기]나 [저장하고 다음]으로 돌아온다."""
         self._hide_overlays()
         self.nb.select(0)
-        self.header_title.config(text="환경 설정")
+        self.header_title.config(text="단지기본정보")
         self._nav("settings")
 
     def _go_back(self):
@@ -647,14 +646,97 @@ class App:
             ttk.Label(parent, text=hint, foreground="#777").grid(row=r, column=2, sticky="w", padx=4)
         return e
 
-    # ================= ① 계정·기본정보 =================
+    # ================= ① 단지기본정보 (예전 '환경 설정' + '단지기본정보' 창을 합친 화면) =================
+    # 관리소명·단지명은 관리소 정보 칸 하나로만 받고, 저장할 때 {단지:관리소명}·{단지:단지명}에도 같이 넣는다.
+    COMPLEX_SHARED = {"관리소명": "관리소", "단지명": "단지명"}     # 단지기본정보 키 → 관리소 정보 키
+
+    def _scroll_area(self, parent):
+        """세로로 긴 화면을 위한 스크롤 영역. 안쪽 Frame을 돌려준다."""
+        bg = ttk.Style().lookup("TFrame", "background") or "#fafafa"
+        cv = tk.Canvas(parent, highlightthickness=0, borderwidth=0, bg=bg)
+        sb = ttk.Scrollbar(parent, orient="vertical", command=cv.yview)
+        inner = ttk.Frame(cv)
+        win = cv.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        cv.pack(side="left", fill="both", expand=True)
+
+        def wheel(e):
+            cv.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+        cv.bind("<Enter>", lambda _e: cv.bind_all("<MouseWheel>", wheel))
+        cv.bind("<Leave>", lambda _e: cv.unbind_all("<MouseWheel>"))
+        return inner
+
     def _build_tab_account(self):
         tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="  ① 계정·기본정보  ")
+        self.nb.add(tab, text="  ① 단지기본정보  ")
         c = self.cfg
+        cx_saved = c.get("complex_info", {}) or {}
+        cx = {**complex_info.defaults(), **cx_saved}
 
-        acc = ttk.LabelFrame(tab, text="계정 (홈넷 로그인에 씁니다)")
-        acc.pack(fill="x", padx=10, pady=(8, 4))
+        nav = ttk.Frame(tab)
+        nav.pack(side="bottom", fill="x", padx=10, pady=8)
+        self._orange_button(nav, "저장하고 다음  ▶", self._next_from_account).pack(side="right")
+        ttk.Button(nav, text="단지 항목 처음 값으로", command=self._reset_complex).pack(side="right", padx=8)
+        ttk.Label(nav, foreground="#555", text="여기 값은 모든 공문의 빈칸({관리소}·{단지:관리소명} 등)에 "
+                                               "자동으로 들어갑니다.").pack(side="left")
+        ttk.Separator(tab).pack(side="bottom", fill="x")
+        body = self._scroll_area(tab)
+
+        info = ttk.LabelFrame(body, text="우리 관리소·단지 (처음 한 번만 입력 — 공문의 빈칸에 자동으로 들어갑니다)")
+        info.pack(fill="x", padx=10, pady=(8, 4))
+        self.info_entries = {}
+        shared_back = {v: k for k, v in self.COMPLEX_SHARED.items()}
+        for i, (key, label, hint) in enumerate(INFO_FIELDS):
+            if key == "임대유형":     # 고르는 칸
+                ttk.Label(info, text=label).grid(row=i, column=0, sticky="e", padx=8, pady=3)
+                cb = ttk.Combobox(info, values=RENT_TYPES, state="readonly", width=10)
+                cb.set(dtpl.normalize_rent_type(c.get(key)))
+                cb.grid(row=i, column=1, sticky="w", padx=4)
+                ttk.Label(info, text=hint, foreground="#777").grid(row=i, column=2, sticky="w")
+                cb.bind("<<ComboboxSelected>>", lambda _e: self._refresh())
+                self.info_entries[key] = cb
+                continue
+            default = c.get(key, "") or cx_saved.get(shared_back.get(key, ""), "")
+            self.info_entries[key] = self._row(info, i, label, default, hint=hint)
+            self.info_entries[key].bind("<KeyRelease>", lambda _e: self._refresh())
+        self.complex_entries: dict[str, ttk.Entry] = {}
+        r = len(INFO_FIELDS)
+        for key, label, _, hint in complex_info.BASIC:
+            if key in self.COMPLEX_SHARED:
+                continue
+            self.complex_entries[key] = self._row(info, r, label, cx.get(key, ""), hint=hint)
+            r += 1
+
+        types = ttk.LabelFrame(body, text="평형(계약면적 ㎡)과 세대수")
+        types.pack(fill="x", padx=10, pady=4)
+        for i in range(1, complex_info.MAX_TYPES + 1):
+            rr, cc = (i - 1) // 3, ((i - 1) % 3) * 3
+            ttk.Label(types, text=f"평형{i}").grid(row=rr, column=cc, padx=(8, 2), pady=3)
+            box = ttk.Frame(types)
+            box.grid(row=rr, column=cc + 1, padx=2, pady=3)
+            for key, unit in ((f"평형{i}", "㎡"), (f"평형{i}세대수", "세대")):
+                e = ttk.Entry(box, width=8)
+                e.insert(0, cx.get(key, ""))
+                e.pack(side="left")
+                ttk.Label(box, text=unit, foreground="#999").pack(side="left", padx=(1, 6))
+                self.complex_entries[key] = e
+
+        accf = ttk.LabelFrame(body, text="계좌·업체")
+        accf.pack(fill="x", padx=10, pady=4)
+        for i, (key, label, _, hint) in enumerate(complex_info.ACCOUNT):
+            self.complex_entries[key] = self._row(accf, i, label, cx.get(key, ""), hint=hint)
+
+        ex = ttk.LabelFrame(body, text="직접 추가하는 항목 (한 줄에 '이름=값', 서식에서는 {단지:이름})")
+        ex.pack(fill="x", padx=10, pady=4)
+        self.complex_extra = tk.Text(ex, height=3, width=60, font=FONT, **TEXT_OPTS)
+        self.complex_extra.insert("1.0", cx.get("추가항목", ""))
+        self.complex_extra.pack(fill="x", padx=8, pady=6)
+
+        acc = ttk.LabelFrame(body, text="계정 (홈넷 로그인에 씁니다)")
+        acc.pack(fill="x", padx=10, pady=4)
         self.homnet_id = self._row(acc, 0, "홈넷 아이디(사번)", c.get("homnet_id", ""))
         self.homnet_pw = self._row(acc, 1, "홈넷 비밀번호", c.get("homnet_pw", ""), secret=True)
         self.vpn_id = self._row(acc, 2, "VPN 아이디", c.get("vpn_id", ""),
@@ -670,24 +752,8 @@ class App:
         self.net_label.pack(side="left")
         ttk.Button(st, text="연결 상태 확인", command=self._check_tunnel).pack(side="left", padx=10)
 
-        info = ttk.LabelFrame(tab, text="우리 관리소 정보 (처음 한 번만 입력 — 공문의 빈칸에 자동으로 들어갑니다)")
-        info.pack(fill="x", padx=10, pady=4)
-        self.info_entries = {}
-        for i, (key, label, hint) in enumerate(INFO_FIELDS):
-            if key == "임대유형":     # 고르는 칸
-                ttk.Label(info, text=label).grid(row=i, column=0, sticky="e", padx=8, pady=3)
-                cb = ttk.Combobox(info, values=RENT_TYPES, state="readonly", width=10)
-                cb.set(dtpl.normalize_rent_type(c.get(key)))
-                cb.grid(row=i, column=1, sticky="w", padx=4)
-                ttk.Label(info, text=hint, foreground="#777").grid(row=i, column=2, sticky="w")
-                cb.bind("<<ComboboxSelected>>", lambda _e: self._refresh())
-                self.info_entries[key] = cb
-                continue
-            self.info_entries[key] = self._row(info, i, label, c.get(key, ""), hint=hint)
-            self.info_entries[key].bind("<KeyRelease>", lambda _e: self._refresh())
-
-        doc = ttk.LabelFrame(tab, text="결재정보 기본값")
-        doc.pack(fill="x", padx=10, pady=4)
+        doc = ttk.LabelFrame(body, text="결재정보 기본값")
+        doc.pack(fill="x", padx=10, pady=(4, 10))
         ttk.Label(doc, text="공개여부").grid(row=0, column=0, sticky="e", padx=8, pady=3)
         self.public_type = ttk.Combobox(doc, values=homnet_draft.PUBLIC_TYPES, state="readonly", width=10)
         self.public_type.set(c.get("public_type", "비공개"))
@@ -707,13 +773,29 @@ class App:
         self.binder.grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
         ttk.Label(doc, text="비우면 홈넷 기본값 그대로", foreground="#777").grid(row=2, column=4, sticky="w")
 
-        nav = ttk.Frame(tab)
-        nav.pack(side="bottom", fill="x", padx=10, pady=8)
-        self._orange_button(nav, "저장하고 다음  ▶", self._next_from_account).pack(side="right")
+    def _complex_values(self) -> dict:
+        """화면의 단지 항목 + 관리소 정보의 관리소명·단지명 → settings.json의 complex_info."""
+        out = {k: e.get().strip() for k, e in self.complex_entries.items()}
+        out["추가항목"] = self.complex_extra.get("1.0", "end-1c")
+        info = self._info_values()
+        for ck, ik in self.COMPLEX_SHARED.items():
+            out[ck] = info.get(ik, "")
+        return out
+
+    def _reset_complex(self):
+        if not messagebox.askyesno("처음 값으로", "단지 항목(평형·계좌·업체 등)을 처음 값(광주우산3)으로 되돌릴까요?\n"
+                                              "관리소명·단지명·담당자·계정은 그대로 둡니다.", parent=self.root):
+            return
+        d = complex_info.defaults()
+        for k, e in self.complex_entries.items():
+            e.delete(0, "end")
+            e.insert(0, d.get(k, ""))
+        self.complex_extra.delete("1.0", "end")
 
     def _next_from_account(self):
         self._save_settings()
-        self.log("✅ 계정·기본정보를 저장했습니다.")
+        self.log("✅ 단지기본정보를 저장했습니다. 모든 서식에 자동으로 들어갑니다.")
+        self._refresh()
         self.nb.select(1)
         self._nav("write")
 
@@ -734,6 +816,9 @@ class App:
         return {k: e.get().strip() for k, e in self.info_entries.items()}
 
     def _save_settings(self):
+        if getattr(self, "complex_entries", None):
+            self.cfg["complex_info"] = self._complex_values()
+            dtpl.set_complex(complex_info.resolve(self.cfg["complex_info"]))
         values = {"vpn_id": self.vpn_id.get(), "vpn_pw": self.vpn_pw.get(),
                   "homnet_id": self.homnet_id.get(), "homnet_pw": self.homnet_pw.get(),
                   "public_type": self.public_type.get(), "closed_grades": self.closed.get().strip(),
@@ -1265,7 +1350,7 @@ class App:
             return
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
-            messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
+            messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self.nb.select(0)
             return
         vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
@@ -1553,7 +1638,7 @@ class App:
         try:
             grades = sorted({int(x) for x in self.closed.get().replace(" ", "").split(",") if x})
         except ValueError:
-            raise ValueError("① 계정·기본정보의 '비공개 호'는 숫자로 적어 주세요. 예: 6") from None
+            raise ValueError("단지기본정보의 '비공개 호'는 숫자로 적어 주세요. 예: 6") from None
         if any(g < 1 or g > 8 for g in grades):
             raise ValueError("비공개 호는 1~8 사이 숫자입니다.")
         if self.public_type.get() == "비공개" and not grades:
@@ -1591,7 +1676,7 @@ class App:
             return
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
-            messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
+            messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self.nb.select(0)
             return
         if self.found_labels and self.found[0] != self._round():
@@ -1696,77 +1781,8 @@ class App:
 
     # ================= 단지기본정보 =================
     def _show_complex(self):
-        """관리소명·평형·업체처럼 여러 서식에 되풀이해 들어가는 값({단지:…} 칸)을 넣는 창."""
-        win = tk.Toplevel(self.root)
-        win.title("단지기본정보")
-        win.transient(self.root)
-        win.grab_set()
-        saved = {**complex_info.defaults(), **self.cfg.get("complex_info", {})}
-        entries: dict[str, ttk.Entry] = {}
-        body = ttk.Frame(win, padding=12)
-        body.pack(fill="both", expand=True)
-        ttk.Label(body, foreground="#555", wraplength=int(620 * self.k), justify="left",
-                  text="월별·주별 서식의 {단지:관리소명} 같은 칸에 자동으로 들어갑니다. "
-                       "한 번 넣어 두면 공문마다 입력하지 않아도 됩니다.").grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-
-        def rows(parent, items):
-            for i, (key, label, _, hint) in enumerate(items):
-                ttk.Label(parent, text=label).grid(row=i, column=0, sticky="e", padx=6, pady=2)
-                e = ttk.Entry(parent, width=36)
-                e.insert(0, saved.get(key, ""))
-                e.grid(row=i, column=1, sticky="w", padx=4)
-                ttk.Label(parent, text=hint, foreground="#999").grid(row=i, column=2, sticky="w")
-                entries[key] = e
-
-        basic = ttk.LabelFrame(body, text="기본")
-        basic.grid(row=1, column=0, columnspan=4, sticky="we", pady=4)
-        rows(basic, complex_info.BASIC)
-        types = ttk.LabelFrame(body, text="평형(계약면적 ㎡)과 세대수")
-        types.grid(row=2, column=0, columnspan=4, sticky="we", pady=4)
-        for i in range(1, complex_info.MAX_TYPES + 1):
-            r, c = (i - 1) // 3, ((i - 1) % 3) * 3
-            ttk.Label(types, text=f"평형{i}").grid(row=r, column=c, padx=(8, 2), pady=2)
-            box = ttk.Frame(types)
-            box.grid(row=r, column=c + 1, padx=2, pady=2)
-            for key, unit in ((f"평형{i}", "㎡"), (f"평형{i}세대수", "세대")):
-                e = ttk.Entry(box, width=8)
-                e.insert(0, saved.get(key, ""))
-                e.pack(side="left")
-                ttk.Label(box, text=unit, foreground="#999").pack(side="left", padx=(1, 6))
-                entries[key] = e
-        acc = ttk.LabelFrame(body, text="계좌·업체")
-        acc.grid(row=3, column=0, columnspan=4, sticky="we", pady=4)
-        rows(acc, complex_info.ACCOUNT)
-        ttk.Label(body, text="직접 추가하는 항목 (한 줄에 '이름=값', 서식에서는 {단지:이름})").grid(
-            row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        extra = tk.Text(body, height=3, width=60, font=FONT, **TEXT_OPTS)
-        extra.insert("1.0", saved.get("추가항목", ""))
-        extra.grid(row=5, column=0, columnspan=4, sticky="we")
-
-        def save():
-            info = {k: e.get().strip() for k, e in entries.items()}
-            info["추가항목"] = extra.get("1.0", "end-1c")
-            self.cfg["complex_info"] = info
-            dtpl.set_complex(complex_info.resolve(info))
-            self._save_settings()
-            self.log("✅ 단지기본정보를 저장했습니다. 월별·주별 서식에 자동으로 들어갑니다.")
-            win.destroy()
-            self._refresh()
-
-        def reset():
-            if messagebox.askyesno("처음 값으로", "단지기본정보를 처음 값(광주우산3)으로 되돌릴까요?", parent=win):
-                d = complex_info.defaults()
-                for k, e in entries.items():
-                    e.delete(0, "end")
-                    e.insert(0, d.get(k, ""))
-                extra.delete("1.0", "end")
-
-        btns = ttk.Frame(body)
-        btns.grid(row=6, column=0, columnspan=4, sticky="e", pady=(10, 0))
-        ttk.Button(btns, text="처음 값으로", command=reset).pack(side="left", padx=4)
-        ttk.Button(btns, text="닫기", command=win.destroy).pack(side="left", padx=4)
-        ttk.Button(btns, text="저장", style="Accent.TButton", command=save).pack(side="left", padx=4)
+        """예전 단지기본정보 창 → 이제 ① 단지기본정보 화면(환경 설정과 합침)을 연다."""
+        self._show_settings()
 
     def _write_history(self, title, receiver, status):
         path = os.path.join(paths.sub_dir("logs"), f"작성이력_{dt.date.today():%Y%m}.csv")
@@ -1787,7 +1803,7 @@ class App:
         고른 것에 따라 PDF(000으로 가림)·첨부파일(PDF는 000으로 가림)·서식('수집한 서식')을 만든다."""
         hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
         if not (hid and hpw):
-            messagebox.showwarning("계정 필요", "① 계정·기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
+            messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self._show_settings()
             return
         dlg = CollectDialog(self.root, self.area)
@@ -1922,7 +1938,8 @@ class App:
     def _show_help(self):
         messagebox.showinfo("사용 방법", (
             "처음 한 번\n"
-            "  ① 계정·기본정보에 홈넷 계정(밖에서는 VPN 계정도)과 관리소 정보를 넣고 [저장하고 다음].\n\n"
+            "  왼쪽 메뉴 [단지기본정보]에 관리소·단지 정보(평형·업체 포함)와 홈넷 계정(밖에서는 VPN 계정도)을\n"
+            "  넣고 [저장하고 다음].\n\n"
             "공문 쓸 때마다\n"
             "  1. 왼쪽 메뉴 [서식 고르기]에서 서식을 고릅니다(🔍로 검색 가능).\n"
             "  2. 받는 분 이름과 날짜를 넣습니다. 빨간 * 표시는 꼭 넣어야 하는 칸입니다.\n"
@@ -1997,7 +2014,7 @@ class App:
             "  {날짜:제출기한} → 2026년 11월 6일(금)\n"
             "  {날짜:만료일|일} → 2026년 11월 6일   |월 → 2026년 11월   |점 → 2026.11.06.\n"
             "  {입력:차수} — 직접 적는 칸   {숫자:수량=10} — 숫자(처음 값 10)   {금액:청구액} — 금○원(금…원)\n"
-            "  {계산:금액=수량*단가} — 다른 칸으로 계산   {단지:관리소명} — 파일 → 단지기본정보의 값\n"
+            "  {계산:금액=수량*단가} — 다른 칸으로 계산   {단지:관리소명} — 단지기본정보의 값\n"
             "  머리말 '분야: 시설' → 시작 화면 분야,  '주기: 매월'·'주기: 매주' → 매월·매주 작성 묶음\n\n"
             "표\n"
             "  | 구분 | 내용 |   ← 첫 줄은 머리글\n"
