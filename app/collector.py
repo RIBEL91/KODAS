@@ -1094,9 +1094,59 @@ def _close_window(driver, h: str) -> None:
         pass
 
 
+# ---------------- 이어 받기 ----------------
+# 받은 폴더마다 진행 상태를 남겨 두고, 오류·[그만 받기]·프로그램 종료로 멈췄으면 다음에 그 다음 문서부터 이어 받는다.
+PROGRESS_FILE = "_이어받기.json"
+
+
+def load_progress(out_dir: str) -> dict:
+    import json
+    try:
+        with open(os.path.join(out_dir, PROGRESS_FILE), encoding="utf-8-sig") as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_progress(out_dir: str, state: dict) -> None:
+    """진행 상태를 저장한다. 쓰는 도중 꺼져도 앞 상태가 남도록 임시 파일에 쓰고 바꿔 끼운다."""
+    import json
+    path = os.path.join(out_dir, PROGRESS_FILE)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def unfinished(root: str) -> tuple:
+    """root('수집' 폴더)에서 가장 최근에 받은 폴더가 끝까지 받지 못했으면 (폴더, 진행 상태). 아니면 (None, {})."""
+    try:
+        subs = sorted((d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))), reverse=True)
+    except OSError:
+        return None, {}
+    for d in subs:
+        st = load_progress(os.path.join(root, d))
+        if not st:
+            continue
+        return (os.path.join(root, d), st) if not st.get("finished") else (None, {})
+    return None, {}
+
+
+def mark_finished(out_dir: str) -> None:
+    """이어 받지 않기로 한 폴더: 다음부터 묻지 않는다."""
+    st = load_progress(out_dir)
+    if st:
+        st["finished"] = True
+        save_progress(out_dir, st)
+
+
 def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = False,
             password: str = "", keyword: str = "", auto_open: bool = True, pdf: bool = False,
-            attachments: bool = False, extra=(), keep_phones=(), stop=None) -> dict:
+            attachments: bool = False, extra=(), keep_phones=(), stop=None,
+            resume: bool = False, settings: dict | None = None) -> dict:
     """대장 문서부터 count개를 살펴보고 저장한다. 파일 이름은 문서 제목과 같다.
 
     - 대장 문서 창이 없고 auto_open이면 기록물등록대장을 열어 맨 위 문서부터 시작한다(keyword로 검색 가능).
@@ -1109,15 +1159,26 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
     - attachments: 첨부파일을 첨부\\{제목} 폴더로 받는다. PDF 첨부는 000으로 가린 것만 남긴다.
     - extra: 꼭 가릴 글자(이름·동호수·연락처), keep_phones: 가리지 않을 전화번호(관리소 대표번호)
     - stop: threading.Event. 켜지면 지금 문서까지만 받고 멈춘다(받은 문서의 PDF·목록은 만든다)
+    - 받는 도중 오류가 나도 그때까지 받은 문서의 목록·PDF는 만든다(돌려준 값의 'error'에 오류 내용).
+    - 문서 하나를 볼 때마다 out_dir\\_이어받기.json에 어디까지 봤는지 적는다. resume이면 그 파일을 읽어
+      마지막으로 본 문서의 다음 문서부터 이어 받는다(앞서 받은 문서·셈은 그대로 이어진다).
+    - settings: 받기 설정(대화상자에서 고른 것). 이어 받을 때 그대로 쓰도록 진행 상태에 같이 적는다.
     """
     import json
     os.makedirs(out_dir, exist_ok=True)
-    try:
-        handle = find_viewer(driver)          # 미리 열어 둔 대장 문서 창이 있으면 그 문서부터
-    except CollectError:
-        if not auto_open:
-            raise
-        handle = open_first_doc(driver, keyword, log)
+    state = load_progress(out_dir) if resume else {}
+    resume_key = state.get("title") or "" if resume else ""
+    if resume_key:
+        log(f"⏩ 지난번 멈춘 곳 다음부터 이어 받습니다({state.get('done', 0)}/{count}개째까지 봄, "
+            f"마지막 문서: {resume_key}).")
+        handle = open_first_doc(driver, keyword, log, after_title=resume_key)
+    else:
+        try:
+            handle = find_viewer(driver)          # 미리 열어 둔 대장 문서 창이 있으면 그 문서부터
+        except CollectError:
+            if not auto_open:
+                raise
+            handle = open_first_doc(driver, keyword, log)
     index, last, saved, internal, skipped, encrypted, used = [], "", 0, 0, 0, 0, set()
     names, unlocked, views = [], 0, 0
     att = {"files": 0, "pdf": 0, "masked": 0, "other": [], "scanned": [], "locked": []}
@@ -1125,6 +1186,25 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
     known = frozenset(driver.window_handles)
     cur_title, last_view = "", ""
     stopped = False
+    start = 0
+    if state.get("done"):                     # 이어 받기: 앞서 받은 문서와 셈을 이어 간다
+        c = state.get("counts") or {}
+        start = min(int(state["done"]), count)
+        names, index = list(state.get("names") or []), list(state.get("index") or [])
+        used = {x.lower() for x in names}
+        saved, internal, skipped = c.get("saved", 0), c.get("internal", 0), c.get("skipped", 0)
+        encrypted, unlocked, views = c.get("encrypted", 0), c.get("unlocked", 0), c.get("views", 0)
+        att.update(c.get("attach") or {})
+    state.update(settings=settings if settings is not None else state.get("settings", {}),
+                 count=count, finished=False)
+    error = ""
+
+    def checkpoint(n: int) -> None:
+        """문서 n개째까지 봤다고 적는다(이어 받을 때 cur_title 다음 문서부터)."""
+        state.update(done=n, title=cur_title, key="", page=1, names=names, index=index,
+                     counts={"saved": saved, "internal": internal, "skipped": skipped, "encrypted": encrypted,
+                             "unlocked": unlocked, "views": views, "attach": att})
+        save_progress(out_dir, state)
 
     def halted() -> bool:
         nonlocal stopped
@@ -1144,109 +1224,126 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
             log(f"  {ex}")
             return None
 
-    for n in range(1, count + 1):
-        if halted():
-            break
-        try:
-            driver.switch_to.window(handle)
-        except Exception:
-            log("문서 창이 닫혀 있어 여기서 멈춥니다.")
-            break
-        status, doc = wait_new_doc(driver, last, log, password=password, known=known)
-        if status == "same":
-            log("마지막 문서이거나 다음 문서로 넘어가지 않아 여기서 멈춥니다.")
-            break
-        if status == "view":
-            views += 1
-            title = doc["title"] or "(제목 못 읽음)"
-            log(f"  {n}/{count} 저장하지 않음('조회' 화면·본문 없음): {title}")
-            repeat = bool(doc["title"]) and doc["title"] == last_view
-            last_view, cur_title = doc["title"], doc["title"]
-            if doc["handle"] != handle:                     # 새 창으로 뜬 '조회' 화면은 닫고 문서 창으로
-                _close_window(driver, doc["handle"])
+    try:
+        for n in range(start + 1, count + 1):
+            if halted():
+                break
+            try:
                 driver.switch_to.window(handle)
+            except Exception:
+                raise CollectError("문서 창이 닫혀 있어 여기서 멈춥니다.")
+            status, doc = wait_new_doc(driver, last, log, password=password, known=known)
+            if status == "same":
+                log("마지막 문서이거나 다음 문서로 넘어가지 않아 여기서 멈춥니다.")
+                break
+            if status == "view":
+                views += 1
+                title = doc["title"] or "(제목 못 읽음)"
+                log(f"  {n}/{count} 저장하지 않음('조회' 화면·본문 없음): {title}")
+                repeat = bool(doc["title"]) and doc["title"] == last_view
+                last_view, cur_title = doc["title"], doc["title"]
+                checkpoint(n)
+                if doc["handle"] != handle:                     # 새 창으로 뜬 '조회' 화면은 닫고 문서 창으로
+                    _close_window(driver, doc["handle"])
+                    driver.switch_to.window(handle)
+                else:
+                    last = fingerprint(doc["text"])
+                if n == count:
+                    break
+                known = frozenset(driver.window_handles)
+                if repeat or doc["handle"] == handle and not click_next(driver):
+                    handle = reopen_after(cur_title)
+                    if handle is None:
+                        log("'조회' 화면 다음 문서로 넘어가지 못해 여기서 멈춥니다.")
+                        break
+                    last, known = "", frozenset(driver.window_handles)
+                elif doc["handle"] != handle and not click_next(driver):
+                    log("[다음] 버튼을 찾지 못해 여기서 멈춥니다.")
+                    break
+                time.sleep(1.5)
+                continue
+            last_view = ""
+            if status == "encrypted":
+                encrypted += 1
+                consecutive_enc += 1
+                log(f"  {n}/{count} 암호가 걸린 문서라 건너뜁니다.")
+                dismiss_password(driver)
+                if consecutive_enc >= 15:
+                    log("암호 문서가 계속 이어져 여기서 멈춥니다.")
+                    break
             else:
+                consecutive_enc = 0
                 last = fingerprint(doc["text"])
-            if n == count:
+                meta = extract_meta(doc["text"])
+                cur_title = meta["title"]
+                if only_internal and other_receiver(meta):
+                    skipped += 1
+                    log(f"  {n}/{count} 건너뜀(수신자 있음·접수): {meta['title'] or '(제목 못 읽음)'}")
+                else:
+                    info = read_doc_info(driver, handle, log)
+                    if only_internal and info["kind"] == "접수":
+                        skipped += 1
+                        log(f"  {n}/{count} 건너뜀(접수): {meta['title'] or '(제목 못 읽음)'}")
+                    else:
+                        name = safe_name(meta["title"], n, used)
+                        with open(os.path.join(out_dir, name + ".txt"), "w", encoding="utf-8") as f:
+                            f.write(doc["text"])
+                        if doc["html"]:
+                            with open(os.path.join(out_dir, name + ".html"), "w", encoding="utf-8") as f:
+                                f.write(doc["html"])
+                        if info["raw"]:
+                            with open(os.path.join(out_dir, name + ".info.txt"), "w", encoding="utf-8") as f:
+                                f.write(info["raw"])
+                        with open(os.path.join(out_dir, name + ".meta.json"), "w", encoding="utf-8") as f:
+                            json.dump({"제목": meta["title"], "수신자": meta["receiver"], "구분": info["kind"],
+                                       "편철": info["binder"], "편철원문": info["binder_raw"]},
+                                      f, ensure_ascii=False, indent=1)
+                        index.append(index_line(saved + 1, meta, len(doc["text"]), name)
+                                     + f" | 편철: {info['binder'] or '-'}")
+                        saved += 1
+                        names.append(name)
+                        internal += 1 if meta["internal"] else 0
+                        unlocked += 1 if doc.get("unlocked") else 0
+                        log(f"  {n}/{count} 저장: {name} [편철: {info['binder'] or '못 읽음'}]"
+                            + (" (보안 문서·비밀번호로 엶)" if doc.get("unlocked") else ""))
+                        if attachments:                     # 지금 문서의 첨부까지는 받는다
+                            _take_attachments(driver, handle, out_dir, name, doc, att, log, extra, keep_phones)
+            if status != "encrypted":
+                checkpoint(n)
+            if n == count or halted():
                 break
             known = frozenset(driver.window_handles)
-            if repeat or doc["handle"] == handle and not click_next(driver):
-                handle = reopen_after(cur_title)
+            if not click_next(driver):
+                handle = reopen_after(cur_title)                # [다음]이 없으면 대장 목록에서 다음 줄로
                 if handle is None:
-                    log("'조회' 화면 다음 문서로 넘어가지 못해 여기서 멈춥니다.")
+                    log("[다음] 버튼을 찾지 못해 여기서 멈춥니다.")
                     break
                 last, known = "", frozenset(driver.window_handles)
-            elif doc["handle"] != handle and not click_next(driver):
-                log("[다음] 버튼을 찾지 못해 여기서 멈춥니다.")
-                break
             time.sleep(1.5)
-            continue
-        last_view = ""
-        if status == "encrypted":
-            encrypted += 1
-            consecutive_enc += 1
-            log(f"  {n}/{count} 암호가 걸린 문서라 건너뜁니다.")
-            dismiss_password(driver)
-            if consecutive_enc >= 15:
-                log("암호 문서가 계속 이어져 여기서 멈춥니다.")
-                break
-        else:
-            consecutive_enc = 0
-            last = fingerprint(doc["text"])
-            meta = extract_meta(doc["text"])
-            cur_title = meta["title"]
-            if only_internal and other_receiver(meta):
-                skipped += 1
-                log(f"  {n}/{count} 건너뜀(수신자 있음·접수): {meta['title'] or '(제목 못 읽음)'}")
-            else:
-                info = read_doc_info(driver, handle, log)
-                if only_internal and info["kind"] == "접수":
-                    skipped += 1
-                    log(f"  {n}/{count} 건너뜀(접수): {meta['title'] or '(제목 못 읽음)'}")
-                else:
-                    name = safe_name(meta["title"], n, used)
-                    with open(os.path.join(out_dir, name + ".txt"), "w", encoding="utf-8") as f:
-                        f.write(doc["text"])
-                    if doc["html"]:
-                        with open(os.path.join(out_dir, name + ".html"), "w", encoding="utf-8") as f:
-                            f.write(doc["html"])
-                    if info["raw"]:
-                        with open(os.path.join(out_dir, name + ".info.txt"), "w", encoding="utf-8") as f:
-                            f.write(info["raw"])
-                    with open(os.path.join(out_dir, name + ".meta.json"), "w", encoding="utf-8") as f:
-                        json.dump({"제목": meta["title"], "수신자": meta["receiver"], "구분": info["kind"],
-                                   "편철": info["binder"], "편철원문": info["binder_raw"]},
-                                  f, ensure_ascii=False, indent=1)
-                    index.append(index_line(saved + 1, meta, len(doc["text"]), name)
-                                 + f" | 편철: {info['binder'] or '-'}")
-                    saved += 1
-                    names.append(name)
-                    internal += 1 if meta["internal"] else 0
-                    unlocked += 1 if doc.get("unlocked") else 0
-                    log(f"  {n}/{count} 저장: {name} [편철: {info['binder'] or '못 읽음'}]"
-                        + (" (보안 문서·비밀번호로 엶)" if doc.get("unlocked") else ""))
-                    if attachments:                     # 지금 문서의 첨부까지는 받는다
-                        _take_attachments(driver, handle, out_dir, name, doc, att, log, extra, keep_phones)
-        if n == count or halted():
-            break
-        known = frozenset(driver.window_handles)
-        if not click_next(driver):
-            handle = reopen_after(cur_title)                # [다음]이 없으면 대장 목록에서 다음 줄로
-            if handle is None:
-                log("[다음] 버튼을 찾지 못해 여기서 멈춥니다.")
-                break
-            last, known = "", frozenset(driver.window_handles)
-        time.sleep(1.5)
+    except Exception as ex:                       # 오류가 나도 받은 문서까지는 정리한다
+        error = f"{type(ex).__name__}: {ex}" if not isinstance(ex, CollectError) else str(ex)
+        log(f"⚠ 받는 중 오류가 나서 멈춥니다: {error}")
+        log("  여기까지 받은 문서는 저장했습니다. 다시 [대장 문서 받기]를 누르면 멈춘 곳부터 이어 받습니다.")
     with open(os.path.join(out_dir, "index.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(index) + "\n")
     pdfs = 0
     if pdf and names:
-        log(f"문서 {len(names)}개를 PDF로 만듭니다(이름·동호수·연락처는 000으로 가림)...")
-        try:
-            driver.switch_to.window(handle if handle in driver.window_handles else driver.window_handles[0])
-        except Exception:
-            pass
-        pdfs = make_pdfs(driver, out_dir, names, log, extra, keep_phones)
+        todo = [x for x in names if not os.path.isfile(os.path.join(out_dir, "PDF", x + ".pdf"))]
+        if todo:
+            log(f"문서 {len(todo)}개를 PDF로 만듭니다(이름·동호수·연락처는 000으로 가림)...")
+            try:
+                driver.switch_to.window(handle if handle in driver.window_handles else driver.window_handles[0])
+            except Exception:
+                pass
+            try:
+                make_pdfs(driver, out_dir, todo, log, extra, keep_phones)
+            except Exception as ex:
+                log(f"⚠ PDF를 만드는 중 오류: {type(ex).__name__}: {ex} (다음에 이어 받을 때 다시 만듭니다)")
+                error = error or f"PDF 만들기 오류: {ex}"
+        pdfs = sum(os.path.isfile(os.path.join(out_dir, "PDF", x + ".pdf")) for x in names)
+    state["finished"] = not (stopped or error)
+    save_progress(out_dir, state)
     return {"pdfs": pdfs, "attach": att, "saved": saved, "internal": internal, "skipped": skipped, "encrypted": encrypted,
-            "unlocked": unlocked, "views": views, "names": names, "dir": out_dir, "stopped": stopped}
+            "unlocked": unlocked, "views": views, "names": names, "dir": out_dir, "stopped": stopped,
+            "error": error, "resumed": bool(resume_key), "done": state.get("done", 0), "count": count}
 

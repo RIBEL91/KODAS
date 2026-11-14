@@ -1834,11 +1834,31 @@ class App:
             messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self._show_complex()
             return
-        dlg = CollectDialog(self.root, self.area)
-        self.root.wait_window(dlg)
-        opt = dlg.result
-        if not opt:
-            return
+        import collector
+        prev_dir, prev = collector.unfinished(paths.sub_dir("수집"))
+        resume = False
+        if prev_dir and prev.get("settings"):
+            c = prev.get("counts") or {}
+            ans = messagebox.askyesnocancel("이어 받기", (
+                "지난번 대장 문서 받기가 끝까지 가지 못하고 멈췄습니다.\n\n"
+                f"  받은 폴더: {os.path.basename(prev_dir)}\n"
+                f"  {prev.get('done', 0)}/{prev.get('count', 0)}개째까지 봄 · 문서 {c.get('saved', 0)}개 저장\n"
+                f"  마지막으로 본 문서: {prev.get('title') or '-'}\n\n"
+                "[예] 멈춘 곳 다음 문서부터 이어 받기(같은 폴더·같은 설정)\n"
+                "[아니요] 처음부터 새로 받기\n"
+                "[취소] 그만두기"))
+            if ans is None:
+                return
+            if ans:
+                resume, opt = True, prev["settings"]
+            else:
+                collector.mark_finished(prev_dir)
+        if not resume:
+            dlg = CollectDialog(self.root, self.area)
+            self.root.wait_window(dlg)
+            opt = dlg.result
+            if not opt:
+                return
         vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
         dest = os.path.join(paths.template_dir(), dtpl.COLLECTED_DIR)
         info = self._info_values()
@@ -1858,17 +1878,25 @@ class App:
             if not homnet.driver_alive(self.driver):
                 self.driver = None
                 self.driver = session.open_homnet(hid, hpw, self.log)
-            out = os.path.join(paths.sub_dir("수집"), dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            out = prev_dir if resume else os.path.join(paths.sub_dir("수집"),
+                                                       dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
             if stop.is_set():
                 raise RuntimeError("시작하기 전에 중단했습니다.")
             res = collector.collect(self.driver, out, opt["count"], log,
                                     only_internal=opt["only_internal"], password=hpw,
                                     keyword=opt["keyword"], auto_open=True, pdf=opt["pdf"],
                                     attachments=opt["attachments"], extra=opt["extra"], keep_phones=keep_phones,
-                                    stop=stop)
+                                    stop=stop, resume=resume, settings=opt)
             res["made"] = []
             if opt["register"] and res["names"]:
-                res["made"] = collector.import_to_templates(out, res["names"], dest, log, opt["area"])
+                st = collector.load_progress(out)               # 이어 받기: 앞서 서식으로 넣은 문서는 빼고
+                done = set(st.get("registered") or [])
+                todo = [x for x in res["names"] if x not in done]
+                try:
+                    res["made"] = collector.import_to_templates(out, todo, dest, log, opt["area"])
+                finally:
+                    st["registered"] = sorted(done | set(todo))
+                    collector.save_progress(out, st)
             return res
 
         def ok(res):
@@ -1882,7 +1910,16 @@ class App:
                 self._set_area(opt["area"])
                 self.picker.opened |= {"수집한 서식", "수집한 서식(수신자 있음)"}   # 받은 묶음을 펼쳐 보여 준다
                 self._show_picker()
-            lines = [("⏹ 중간에 그만 받았습니다. " if res.get("stopped") else "") + f"{res['saved']}개 문서를 받았습니다.",
+            head = []
+            if res.get("error"):
+                head.append(f"⚠ 받는 중 오류가 나서 멈췄습니다: {res['error']}\n"
+                            "   그때까지 받은 문서는 저장했습니다.")
+            if res.get("error") or res.get("stopped"):
+                head.append(f"   {res.get('done', 0)}/{res.get('count', 0)}개째까지 봤습니다. "
+                            "다시 [대장 문서 받기]를 누르면 멈춘 곳 다음부터 이어 받습니다.\n")
+            if res.get("resumed"):
+                head.append("⏩ 지난번 멈춘 곳부터 이어 받았습니다(아래 수는 앞서 받은 것까지 합친 수).")
+            lines = head + [("⏹ 중간에 그만 받았습니다. " if res.get("stopped") else "") + f"{res['saved']}개 문서를 받았습니다.",
                      f"  - 보안 문서를 비밀번호로 연 것: {res.get('unlocked', 0)}개",
                      f"  - 받지 않음: '조회' 화면 {res.get('views', 0)}개, 열지 못한 보안 문서 {res.get('encrypted', 0)}개"
                      + (f", 내부결재 아님 {res['skipped']}개" if res.get("skipped") else "")]
@@ -1905,12 +1942,14 @@ class App:
                              "이름·동호수·연락처는 공문 쓸 때 넣는 칸이 되었고, 그 밖의 사람 이름은 000으로 바꿨습니다.\n"
                              "문장 속 개인정보가 남아 있을 수 있으니 쓰기 전에 한 번 훑어봐 주세요.")
             lines.append(f"\n받은 폴더: {res['dir']}")
-            if messagebox.askyesno("받기 완료", "\n".join(lines) + "\n\n받은 폴더를 열까요?"):
+            if messagebox.askyesno("받기 완료" if not (res.get("error") or res.get("stopped")) else "받기 멈춤",
+                                   "\n".join(lines) + "\n\n받은 폴더를 열까요?"):
                 os.startfile(res["dir"])
 
         def err(ex):
             box["close"]()
-            messagebox.showerror("받기 실패", str(ex))
+            messagebox.showerror("받기 실패", f"{ex}\n\n받다가 멈췄다면 받은 문서는 저장되어 있습니다. "
+                                 "다시 [대장 문서 받기]를 누르면 멈춘 곳부터 이어 받을지 묻습니다.")
 
         if self.busy:
             box["close"]()
