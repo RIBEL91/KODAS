@@ -495,20 +495,33 @@ class Home(HitCanvas):
         pad = 20 * k
         tg = 12 * k
         tw = (rw - pad * 2 - tg) / 2
-        th = max(86 * k, min(108 * k, (h * 0.42 - 76 * k) / 2))
-        p1y1 = py0 + 62 * k + th * 2 + tg + pad
+        n = min(len(self.shortcuts), 6)
+        rows_n = max(1, (n + 1) // 2)              # 두 칸씩, 홀수면 마지막 칸은 한 줄 전체
+        th = max(70 * k if rows_n > 2 else 86 * k,
+                 min(108 * k, (h * 0.42 - 76 * k - (rows_n - 2) * tg) / max(2, rows_n)))
+        p1y1 = py0 + 62 * k + th * rows_n + tg * (rows_n - 1) + pad
         P.card(px0, py0, px1, p1y1, 18 * k)
         self.create_text(px0 + pad + 2 * k, py0 + 32 * k, anchor="w", text="바로가기",
                          font=(FONT, fs(14, k, 10), "bold"), fill=TEXT)
-        for j, (label, icon, tint, cmd) in enumerate(self.shortcuts[:4]):
+        for j, (label, icon, tint, cmd) in enumerate(self.shortcuts[:n]):
             tx0 = px0 + pad + (j % 2) * (tw + tg)
             ty0 = py0 + 62 * k + (j // 2) * (th + tg)
-            P.rrect(tx0, ty0, tx0 + tw, ty0 + th, 14 * k, CARD, outline=BORDER)
-            P.shadow(tx0 + 4 * k, ty0 + 4 * k, tx0 + tw - 4 * k, ty0 + th, 14 * k, alpha=14, dy=3)
-            P.tint_icon(icon, tx0 + tw / 2, ty0 + th * 0.38, 21 * k, tint, square=True, size=20 * k)
-            lt = self.create_text(tx0 + tw / 2, ty0 + th * 0.76, anchor="center", text=label,
-                                  font=(FONT, fs(10, k, 8.5)), fill=TEXT)
-            self.add_hit((tx0, ty0, tx0 + tw, ty0 + th), cmd,
+            ww = tw * 2 + tg if (j == n - 1 and n % 2) else tw      # 홀수 개면 마지막은 넓게
+            P.rrect(tx0, ty0, tx0 + ww, ty0 + th, 14 * k, CARD, outline=BORDER)
+            P.shadow(tx0 + 4 * k, ty0 + 4 * k, tx0 + ww - 4 * k, ty0 + th, 14 * k, alpha=14, dy=3)
+            if ww > tw:                              # 넓은 칸: 아이콘 왼쪽, 글자 오른쪽
+                lw = self.create_text(0, 0, text=label, font=(FONT, fs(10, k, 8.5)))
+                bw = self.bbox(lw)[2] - self.bbox(lw)[0]
+                self.delete(lw)
+                ix = tx0 + ww / 2 - (bw + 44 * k) / 2 + 21 * k
+                P.tint_icon(icon, ix, ty0 + th / 2, 21 * k, tint, square=True, size=20 * k)
+                lt = self.create_text(ix + 32 * k, ty0 + th / 2, anchor="w", text=label,
+                                      font=(FONT, fs(10, k, 8.5)), fill=TEXT)
+            else:
+                P.tint_icon(icon, tx0 + tw / 2, ty0 + th * 0.38, 21 * k, tint, square=True, size=20 * k)
+                lt = self.create_text(tx0 + tw / 2, ty0 + th * 0.76, anchor="center", text=label,
+                                      font=(FONT, fs(10, k, 8.5)), fill=TEXT)
+            self.add_hit((tx0, ty0, tx0 + ww, ty0 + th), cmd,
                          (lambda t=lt: lambda v: self.itemconfigure(t, fill=PRIMARY_D if v else TEXT))())
 
         # ---- 오른쪽: 최근 작성 문서 ----

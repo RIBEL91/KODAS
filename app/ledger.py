@@ -227,3 +227,21 @@ def find_review(driver, round_no: int, log) -> Review:
         raise LedgerError(f"기록물등록대장(올해)에서 '{REVIEW_TITLE}(… {round_no}차)' 문서를 찾지 못했습니다.")
     log(f"✅ {round_no}차 입주자격심사 결과: {review.doc_number}, 갱신월 {review.renewal_month:%Y-%m}")
     return review
+
+
+def year_rows(driver, year: int, log=print, stop=None) -> list[dict]:
+    """기록물등록대장 year년 목록을 처음부터 끝까지 읽는다(한 쪽 50줄). 읽기만 한다.
+    그 해 대장이 없으면 LedgerError. stop(threading.Event)이 서면 그때까지 읽은 줄을 돌려준다."""
+    open_register(driver)
+    select_year(driver, year)
+    pages = total_pages(driver)
+    log(f"  {year}년 기록물등록대장 {pages}쪽을 읽습니다...")
+    rows = list_rows(driver)
+    for page in range(2, pages + 1):
+        if stop is not None and stop.is_set():
+            break
+        rows += go_page(driver, page, "")
+        if page % 5 == 0 or page == pages:
+            log(f"  {year}년 대장 {page}/{pages}쪽")
+    driver.switch_to.default_content()
+    return rows

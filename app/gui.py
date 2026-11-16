@@ -435,7 +435,8 @@ class App:
         shortcuts = (("단지기본정보", "building", "blue", self._show_complex),
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
                      ("대장 문서 받기", "download", "green", self._collect_docs),
-                     ("사용 방법", "help", "violet", self._show_help))
+                     ("사용 방법", "help", "violet", self._show_help),
+                     ("품질평가서 작성", "report", "teal", self._quality_eval))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
                                        items=lambda: list(enumerate(self.templates)),
@@ -617,6 +618,7 @@ class App:
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
         f.add_command(label="홈넷 대장 문서 받기 (PDF·첨부·서식)…", command=self._collect_docs)
         f.add_command(label="받은 대장 문서 폴더 열기", command=lambda: os.startfile(paths.sub_dir("수집")))
+        f.add_command(label="품질평가서 작성 (평가표 점수·근거, 증빙 폴더)…", command=self._quality_eval)
         f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
@@ -967,6 +969,9 @@ class App:
                   "window": self.cfg.get("window", ""),
                   "renewal_months": self.cfg.get("renewal_months", {}),
                   "design": self.cfg.get("design", {}),
+                  "quality_xlsx": self.cfg.get("quality_xlsx", ""),
+                  "quality_prev_xlsx": self.cfg.get("quality_prev_xlsx", ""),
+                  "quality_ledger_year": self.cfg.get("quality_ledger_year"),
                   **self._info_values()}
         try:
             settings_store.save(values, self.remember.get())
@@ -2058,6 +2063,42 @@ class App:
             self.log(f"⚠️ 작성 이력 저장 실패: {ex}")
 
     # ================= 대장 문서 모으기 =================
+    def _quality_eval(self):
+        """바로가기 [품질평가서 작성]: 평가표 엑셀 점수·근거 입력과 항목별 증빙 폴더."""
+        import quality_view
+        win = getattr(self, "_quality_win", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            return
+        self._quality_win = quality_view.QualityDialog(self.root, self.cfg, self.k, self.log,
+                                                       homnet_run=self._quality_homnet)
+        self._quality_win.bind("<Destroy>", lambda e: self._save_settings() if e.widget is self._quality_win
+                               else None)
+
+    def _quality_homnet(self, job, on_ok, on_err):
+        """품질평가 초안: 홈넷에 로그인(필요하면 VPN 먼저)한 뒤 job(driver, log)를 작업 스레드에서 돌린다."""
+        hid, hpw = self.homnet_id.get().strip(), self.homnet_pw.get()
+        if not (hid and hpw):
+            messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
+            on_err(RuntimeError("홈넷 계정이 없습니다."))
+            return
+        if self.busy:
+            on_err(RuntimeError("다른 작업이 진행 중입니다. 끝난 뒤 다시 눌러 주세요."))
+            return
+        vpn_id, vpn_pw = self.vpn_id.get().strip(), self.vpn_pw.get()
+
+        def work():
+            import session
+            session.ensure_tunnel(self.log, vpn_id, vpn_pw)
+            if not homnet.driver_alive(self.driver):
+                self.driver = None
+                self.driver = session.open_homnet(hid, hpw, self.log)
+            return job(self.driver, self.log)
+
+        self.run_bg(work, on_ok, on_err)
+
     def _collect_docs(self):
         """기록물등록대장 문서를 [다음]으로 넘기며 '수집' 폴더에 받는다.
         고른 것에 따라 PDF(000으로 가림)·첨부파일(PDF는 000으로 가림)·서식('수집한 서식')을 만든다."""
@@ -2528,9 +2569,9 @@ class App:
             pass
         import subprocess
         if getattr(sys, "frozen", False):
-            subprocess.Popen([sys.executable], cwd=paths.program_dir())
+            subprocess.Popen([sys.executable, "--restart"], cwd=paths.program_dir())
         else:
-            subprocess.Popen([sys.executable, os.path.abspath(__file__)], cwd=paths.program_dir())
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "--restart"], cwd=paths.program_dir())
 
     def _on_close(self):
         if self.root.state() == "normal":       # 다음에 같은 크기·위치의 창으로 연다
@@ -2589,6 +2630,15 @@ def selftest() -> int:
 def main():
     if "--selftest" in sys.argv:
         sys.exit(selftest())
+    import single_instance               # KODAS는 하나만: 이미 열려 있으면 그 창을 앞으로 올리고 끝낸다
+    if not single_instance.acquire(wait=15 if "--restart" in sys.argv else 0):
+        single_instance.show_existing()
+        try:
+            import pyi_splash            # exe 시작 화면이 떠 있으면 닫는다
+            pyi_splash.close()
+        except Exception:
+            pass
+        sys.exit(0)
     try:   # 고해상도 화면에서 글자가 흐리지 않게
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)

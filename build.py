@@ -22,17 +22,20 @@ def _put(src: str, folder: str) -> str:
     """exe를 folder에 놓는다. 이전 exe가 실행 중이면 이름을 .old로 비켜 두고 바꾼다."""
     os.makedirs(folder, exist_ok=True)
     dst = os.path.join(folder, NAME + ".exe")
-    old = dst + ".old"
-    try:
-        if os.path.exists(old):
+    import glob
+    for old in glob.glob(glob.escape(dst) + ".old*"):
+        try:
             os.remove(old)                     # 지난번에 비켜 둔 파일(이제 안 쓰이면 지워진다)
-    except OSError:
-        pass
+        except OSError:
+            pass
     if os.path.exists(dst):
         try:
             os.remove(dst)
-        except OSError:                        # 실행 중이라 못 지움 → 이름만 바꿔 둔다
-            os.replace(dst, old)
+        except OSError:                        # 실행 중이라 못 지움 → 비어 있는 .old 이름으로 비켜 둔다
+            n = 1
+            while os.path.exists(dst + (".old" if n == 1 else f".old{n}")):
+                n += 1
+            os.replace(dst, dst + (".old" if n == 1 else f".old{n}"))
     shutil.copy2(src, dst)
     return dst
 
