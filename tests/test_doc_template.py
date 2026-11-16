@@ -109,7 +109,7 @@ def test_hwp_html_uses_para_marks_not_css_margins():
 def test_bundled_templates_all_render():
     items, errors = dtpl.load_all(paths.template_dir())
     assert not errors
-    assert len([t for t in items if t.file_name[:2].isdigit()]) == 25    # 임대 서식(오영철)
+    assert len([t for t in items if t.file_name[:2].isdigit()]) == 27    # 임대 서식(오영철, 34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
     assert len([t for t in items if t.file_name.startswith(("월별", "주별"))]) == 64   # 관리업무 서식(ai3)
     import complex_info
     dtpl.set_complex(complex_info.resolve({}))
@@ -180,18 +180,18 @@ def test_cycle_header(tmp_path):
     assert dtpl.parse("제목: 가\n---\n본문").cycle == "수시"
     items, _ = dtpl.load_all(paths.template_dir())
     monthly = {x.file_name[:2]: x for x in items if x.cycle == "매월" and x.file_name[:2].isdigit()}
-    assert sorted(monthly) == ["05", "06", "07", "08", "14", "15", "16", "18", "24", "25", "26", "31", "32"]
+    assert sorted(monthly) == ["05", "06", "07", "08", "14", "15", "16", "18", "24", "25", "26", "31", "32", "34"]
     bundles = {}
     for no, x in sorted(monthly.items(), key=lambda it: it[1].sort_key):
         bundles.setdefault(x.bundle, []).append(no)
-    assert bundles == {"갱신계약": ["05", "06", "08", "14", "16", "18", "24", "26", "25"], "주택소유 정기": ["31", "32"],
+    assert bundles == {"갱신계약": ["05", "06", "08", "14", "16", "34", "18", "24", "26", "25"], "주택소유 정기": ["31", "32"],
                        "임대조건 신고": ["15"], "예비입주자 순위안내": ["07"]}
     assert dtpl.parse(dtpl.dump(monthly["31"])).bundle == "주택소유 정기"
     others = {}
     for x in items:
         if x.cycle == "수시":
             others.setdefault(x.bundle, []).append(x.file_name[:2])
-    assert others == {"예비입주자": ["01", "02", "03", "04"], "기타": ["19", "27", "28"],
+    assert others == {"예비입주자": ["01", "02", "03", "04", "33"], "기타": ["19", "27", "28"],
                       "권리의무승계": ["21", "22", "23"], "가정어린이집": ["29", "30"]}
 
 
@@ -238,3 +238,14 @@ def test_hwp_html_marks_each_table_once_with_font_size():
     assert [m[0] for m in marks] == ["1", "2"]
     assert all(int(pt) == dtpl.TABLE_PT for _, pt in marks)
     assert not dtpl.TABLE_MARK_RE.search(dtpl.to_html(body))     # 미리보기에는 표식이 없다
+
+
+def test_choice_field_repeats_rows():
+    t = dtpl.parse("제목: 계약체결 안내({선택:형별=36|46|51|59}형)\n수신자: 내부결재\n---\n"
+                   "| 형별 | 동호 |\n| {선택값:형별} |  |\n  끝.")
+    assert t.input_fields() == ["형별"] and t.input_kinds() == {"형별": "선택"}
+    assert t.input_options() == {"형별": ["36", "46", "51", "59"]}
+    v = {"입력:형별": "36, 51"}
+    assert dtpl.fill(t.title, v, {}) == "계약체결 안내(36, 51형)"
+    assert dtpl.fill(t.body, v, {}) == "| 형별 | 동호 |\n| 36 |  |\n| 51 |  |\n  끝."
+    assert dtpl.fill(t.title, {}, {}) == "계약체결 안내({형별}형)"      # 안 고르면 빈칸 표시

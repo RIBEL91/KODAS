@@ -18,6 +18,23 @@ def _crypto():
     return encrypt, decrypt
 
 
+def load_raw() -> dict:
+    """설정 파일을 그대로 읽는다(계정은 암호화된 채). 없거나 깨졌으면 빈 dict."""
+    try:
+        with open(PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def set_value(key: str, value) -> None:
+    """설정 한 항목만 바꿔 저장한다(계정 등 다른 항목은 그대로)."""
+    data = load_raw()
+    data[key] = value
+    _write(data)
+
+
 def load() -> dict:
     """설정을 읽는다. 없거나 깨졌으면 빈 dict (계정 복호화 실패도 빈 값)."""
     try:

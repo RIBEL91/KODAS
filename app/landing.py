@@ -13,6 +13,7 @@ import datetime as dt
 import tkinter as tk
 from tkinter import ttk
 
+import ui_kit
 from doc_template import RENT_TYPES, normalize_rent_type
 from ui_kit import (BORDER, CARD, FONT, HOVER_SOFT, LINE, MUTED, PAGE, PRIMARY, PRIMARY_D, PRIMARY_SOFT,
                     SIDEBAR, SUB, TEXT, TINTS, HitCanvas, Painter, ellipsize, fs, is_done, keep_colors,
@@ -147,9 +148,9 @@ class Sidebar(HitCanvas):
         dw, dh, fold = 30 * k, 38 * k, 10 * k           # 문서 너비·높이·접힌 귀퉁이
         dx0, dy0 = lx + (ls - dw) / 2, ly + (ls - dh) / 2
         dx1, dy1 = dx0 + dw, dy0 + dh
-        P.shadow(dx0, dy0, dx1, dy1, 5 * k, alpha=36, dy=3, color="#3a5ee8")
-        P.polygon([(dx0, dy0), (dx1 - fold, dy0), (dx1, dy0 + fold), (dx1, dy1), (dx0, dy1)], "#3d6cf0")
-        P.polygon([(dx1 - fold, dy0), (dx1, dy0 + fold), (dx1 - fold, dy0 + fold)], "#a9c1fb")
+        P.shadow(dx0, dy0, dx1, dy1, 5 * k, alpha=36, dy=3, color=PRIMARY_D)
+        P.polygon([(dx0, dy0), (dx1 - fold, dy0), (dx1, dy0 + fold), (dx1, dy1), (dx0, dy1)], PRIMARY)
+        P.polygon([(dx1 - fold, dy0), (dx1, dy0 + fold), (dx1 - fold, dy0 + fold)], PRIMARY_SOFT)
         for i in range(3):                               # 글줄 세 개
             yy = dy0 + 17 * k + i * 6.5 * k
             P.line([(dx0 + 7 * k, yy), (dx1 - (7 if i < 2 else 12) * k, yy)], "#ffffff", max(1, round(2.2 * k)))
@@ -190,14 +191,14 @@ class Sidebar(HitCanvas):
         cy0 = cy1 - 128 * k
         if cy0 > y + 10 * k:
             x0, x1 = 14 * k, w - 14 * k
-            P.rrect(x0, cy0, x1, cy1, 14 * k, "#eff3fb")
+            P.rrect(x0, cy0, x1, cy1, 14 * k, HOVER_SOFT)
             mid = cy0 + 70 * k
             P.icon("building", x0 + 26 * k, cy0 + 35 * k, 19 * k, "#4b5567")
             self.create_text(x0 + 50 * k, cy0 + 26 * k, anchor="w", text=ellipsize(org or "주택관리공단", 11),
                              font=(FONT, fs(10.5, k, 9), "bold"), fill=TEXT)
             self.create_text(x0 + 50 * k, cy0 + 47 * k, anchor="w", text=ellipsize(place or "단지명을 넣어 주세요", 13),
                              font=(FONT, fs(9, k, 8)), fill=SUB)
-            P.line([(x0 + 14 * k, mid), (x1 - 14 * k, mid)], "#dfe5f1", 1)
+            P.line([(x0 + 14 * k, mid), (x1 - 14 * k, mid)], BORDER, 1)
             P.icon("person", x0 + 26 * k, mid + 29 * k, 18 * k, "#4b5567")
             who = self.create_text(x0 + 50 * k, mid + 29 * k, anchor="w",
                                    text=f"{ellipsize(name, 8)} 님" if name else "담당자 정보 넣기",
@@ -375,8 +376,9 @@ class Home(HitCanvas):
 
         # ---- 파란 배너 ----
         hy0, hy1 = top, top + hero_h
-        P.shadow(x0 + 10 * k, hy0 + 10 * k, x1 - 10 * k, hy1, 22 * k, alpha=55, dy=10, color="#4a64e0")
+        P.shadow(x0 + 10 * k, hy0 + 10 * k, x1 - 10 * k, hy1, 22 * k, alpha=55, dy=10, color=PRIMARY_D)
         mask = P.gradient_rrect(x0, hy0, x1, hy1, 22 * k, *HERO_COLORS)
+        photo = bool(ui_kit.HERO_PHOTO) and P.photo_in(x0, hy0, mask, ui_kit.HERO_PHOTO, HERO_COLORS[1])
         hw = x1 - x0
 
         def deco(d, ss):
@@ -386,8 +388,9 @@ class Home(HitCanvas):
                       fill=(255, 255, 255, 22))
             d.ellipse([-hw * 0.2 * ss, -hero_h * 0.9 * ss, hw * 0.45 * ss, hero_h * 0.35 * ss],
                       fill=(255, 255, 255, 14))
-        P.overlay_in(x0, hy0, mask, deco)
-        art = hw >= 560 * k
+        if not photo:                     # 사진 배너에는 장식 원·종이 그림을 얹지 않는다(사진이 보이게)
+            P.overlay_in(x0, hy0, mask, deco)
+        art = hw >= 560 * k and not photo
         tx = x0 + 40 * k
         text_w = hw - 80 * k
         if art:
@@ -420,7 +423,7 @@ class Home(HitCanvas):
         by = max(bb[3] + 18 * k, hy1 - 30 * k - bh)
         if by + bh > hy1 - 12 * k:
             by = hy1 - 12 * k - bh
-        P.shadow(tx, by, tx + bw, by + bh, bh / 2, alpha=50, dy=6, color="#2a3db0")
+        P.shadow(tx, by, tx + bw, by + bh, bh / 2, alpha=50, dy=6, color=PRIMARY_D)
         P.rrect(tx, by, tx + bw, by + bh, bh / 2, "#ffffff")
         P.icon("add", tx + 30 * k, by + bh / 2, 16 * k, PRIMARY)
         P.icon("chevron", tx + bw - 26 * k, by + bh / 2, 11 * k, TEXT)
@@ -480,8 +483,11 @@ class Home(HitCanvas):
             vb = self.bbox(v)
             self.create_text(vb[2] + 3 * k, mid + 18 * k, anchor="w", text=unit,
                              font=(FONT, fs(11, k, 9)), fill=TEXT)
-            if i != 1 and self.on_history:
-                self.add_hit((sx0, sy0, sx0 + sw3, sy1), self.on_history)
+            hover = (lambda t=v: lambda on: self.itemconfigure(t, fill=PRIMARY_D if on else TEXT))()
+            if i == 1 and self.on_new:          # 등록된 서식 → 서식 고르기 화면
+                self.add_hit((sx0, sy0, sx0 + sw3, sy1), self.on_new, hover)
+            elif i != 1 and self.on_history:
+                self.add_hit((sx0, sy0, sx0 + sw3, sy1), self.on_history, hover)
 
         # ---- 오른쪽: 바로가기 ----
         px0, px1 = rx0, w - m
@@ -528,7 +534,7 @@ class Home(HitCanvas):
         chars = max(8, int((rw - 120 * k) / (11 * k)))
         for r in rows[:fit]:
             rx = px0 + pad - 6 * k
-            P.rrect(rx, ry, px1 - pad + 6 * k, ry + rh, 12 * k, "#fbfcff", outline=BORDER)
+            P.rrect(rx, ry, px1 - pad + 6 * k, ry + rh, 12 * k, SIDEBAR, outline=BORDER)
             ok = is_done(r)
             P.tint_icon("page", rx + 30 * k, ry + rh / 2, 18 * k, "blue" if ok else "red", square=True,
                         size=16 * k)
@@ -550,7 +556,7 @@ class Home(HitCanvas):
             self._show_results()
 
 
-HERO_COLORS = ("#5c93fb", "#6a5df0")
+HERO_COLORS = ui_kit.HERO      # 디자인에 따라 바뀐다
 Landing = Home      # 예전 이름
 
 
@@ -891,7 +897,7 @@ class Picker(tk.Frame):
         """펼침 묶음 머리: ▸/▾ + 이름 + 서식 수. 누르면 펼치거나 접는다."""
         tag = f"fold_{abs(hash(name))}"      # 태그에 띄어쓰기가 있으면 Tk가 둘로 쪼개 클릭이 안 먹는다
         hh = 40 * k
-        hit = round_rect(cv, x - 4 * k, y, x + col_w, y + hh, 10 * k, fill="#f3f6fd" if opened else "#f8f9fd",
+        hit = round_rect(cv, x - 4 * k, y, x + col_w, y + hh, 10 * k, fill=HOVER_SOFT if opened else SIDEBAR,
                          outline="", tags=tag)
         cv.create_text(x + 10 * k, y + hh / 2, anchor="w", text="▾" if opened else "▸",
                        font=(FONT, _fs(11, k, 9)), fill=PRIMARY, tags=tag)
@@ -903,7 +909,7 @@ class Picker(tk.Frame):
 
         def hover(on: bool):
             cv.itemconfigure(title, fill=PRIMARY_D if on or opened else TEXT)
-            cv.itemconfigure(hit, fill=HOVER_SOFT if on else ("#f3f6fd" if opened else "#f8f9fd"))
+            cv.itemconfigure(hit, fill=HOVER_SOFT if on else (HOVER_SOFT if opened else SIDEBAR))
             cv.config(cursor="hand2" if on else "")
         cv.tag_bind(tag, "<Enter>", lambda _e: hover(True))
         cv.tag_bind(tag, "<Leave>", lambda _e: hover(False))
@@ -942,7 +948,7 @@ class InfoScreen(tk.Frame):
                 continue
             e = tk.Entry(self.cv, relief="flat", bd=0, insertbackground=TEXT, highlightthickness=1,
                          font=(FONT, 11), show="●" if key == "homnet_pw" else "")
-            keep_colors(e, bg="#f7f9fd", fg=TEXT, highlightbackground=BORDER, highlightcolor=PRIMARY)
+            keep_colors(e, bg=SIDEBAR, fg=TEXT, highlightbackground=BORDER, highlightcolor=PRIMARY)
             e.bind("<Return>", lambda _e: self._done())
             e.bind("<KeyRelease>", lambda _e: self.msg.set(""))
             self.entries[key] = e
@@ -1067,7 +1073,7 @@ class HistoryScreen(tk.Frame):
                          padx=14, pady=5, cursor="hand2")
             b.pack(side="right")
             b.bind("<Button-1>", lambda _e: on_folder())
-            b.bind("<Enter>", lambda _e: b.config(bg="#cfdcfb"))
+            b.bind("<Enter>", lambda _e: b.config(bg=PRIMARY_SOFT))
             b.bind("<Leave>", lambda _e: b.config(bg=PRIMARY_SOFT))
         tf = tk.Frame(inner, bg=CARD)
         tf.pack(fill="both", expand=True, padx=18, pady=(0, 16))

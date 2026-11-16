@@ -13,6 +13,9 @@ import os
 import re
 import time
 
+import binder_rules
+import privacy
+
 VIEWER_URL_PARTS = ("ledger_dochandler", "dochandler", "view_handdocument")
 # 본문 없이 편철·등록구분·첨부만 보여 주는 '조회' 화면(접수 등록 문서). 이 화면은 저장하지 않는다.
 VIEW_ONLY_URL = "view_handdocument"
@@ -52,6 +55,42 @@ class CollectError(Exception):
 
 def fingerprint(text: str) -> str:
     return hashlib.md5(re.sub(r"\s+", "", text or "")[:4000].encode("utf-8")).hexdigest()
+
+
+_DATE_BITS = [
+    r"\d{1,4}\s*동\s*\d{1,4}\s*호",                                          # 104동 1306호
+    r"\d{2,4}\s*[.년/\-]\s*\d{1,2}\s*[.월/\-]?\s*(?:\d{1,2}\s*[.일]?)?\s*(?:월분|분)?",   # 2025.12. · 2025년 11월분
+    r"\d{2,4}\s*년(?:도)?",                                                  # 2025년
+    r"\d{1,2}\s*월\s*분?",                                                    # 12월분
+    r"[OＯ○]{2,}\s*(?:동\s*[OＯ○]{2,}\s*호)?",                                # 가린 자리(OOO동 OOO호)
+]
+_DATE_BITS_RE = re.compile("|".join(_DATE_BITS))
+
+
+def similar_key(title: str) -> str:
+    """비슷한 제목인지 견줄 열쇠: 날짜·연도·월·동호수와 괄호·빈칸을 뺀 글자.
+    '사회복무요원 급여 지급(2025.12월분)'과 '(2025.11월분)' → 같은 열쇠. '납부최고 1차'·'2차'는 다르다."""
+    t = _DATE_BITS_RE.sub("", title or "")
+    return re.sub(r"[\s()\[\]{}<>.,·~\-_/:]+", "", t)
+
+
+SECURE_MASKS = {"이름": "OOO", "동호수": "OOO동 OOO호", "연락처": "OOO-OOOO-OOOO", "주민번호": "OOOOOO-OOOOOOO"}
+
+
+def _mask_secure_doc(doc: dict, extra=(), keep_phones=()) -> dict:
+    """보안 문서(비밀번호로 연 문서)의 본문 글자·HTML에서 인적사항을 OOO으로 바꾼다.
+    '…(104동 1306호)'처럼 제목에 든 동호수도 바뀌므로 파일 이름에도 남지 않는다."""
+    import html as _h
+    import privacy
+    plain = (doc.get("text") or "") + "\n" + re.sub(r"<[^>]+>", " ", _h.unescape(doc.get("html") or ""))
+    found = [(s, SECURE_MASKS.get(kind, repl), kind)
+             for s, repl, kind in privacy.find_private(plain, extra, keep_phones)]
+    out = dict(doc)
+    out["text"] = privacy.mask_text(doc.get("text") or "", found=found)[0]
+    if doc.get("html"):
+        out["html"] = privacy.mask_html(doc["html"], found=found)[0]
+    out["secure_found"] = found
+    return out
 
 
 def extract_meta(text: str) -> dict:
@@ -314,6 +353,99 @@ def unlock_field(driver, password: str, log=None) -> bool:
     return False
 
 
+# 보안문서: 문서를 열면 문서 창 대신 '처리암호' 창(npasswddlg.jsp)이 따로 뜬다.
+# 입력칸 #Passwd에 홈넷 비밀번호를 넣고 [확인](#nbutton_BtnSubmit-button)을 누르면 문서 창이 열린다.
+PW_WINDOW_URL = "npasswddlg"
+UNLOCKED_VIEWERS: set = set()      # 비밀번호로 연 문서 창(첫 문서) — 저장할 때 보안 문서로 다룬다
+
+
+def _pw_window(driver) -> str | None:
+    cur = None
+    try:
+        cur = driver.current_window_handle
+    except Exception:
+        pass
+    found = None
+    for h in driver.window_handles:
+        try:
+            driver.switch_to.window(h)
+            if PW_WINDOW_URL in (driver.current_url or ""):
+                found = h
+                break
+        except Exception:
+            continue
+    if cur and not found:
+        try:
+            driver.switch_to.window(cur)
+        except Exception:
+            pass
+    return found
+
+
+def unlock_pw_window(driver, password: str, log=None, wait: float = 0) -> str:
+    """'처리암호' 창이 떠 있으면 홈넷 비밀번호를 넣어 연다.
+    돌려주는 값: '' 창 없음 · 'unlocked' 열림 · 'failed' 비밀번호가 없거나 틀려서 못 엶(창은 닫는다)."""
+    from selenium.webdriver.common.by import By
+    end = time.time() + wait
+    while True:
+        win = _pw_window(driver)
+        if win or time.time() >= end:
+            break
+        time.sleep(0.5)
+    if not win:
+        return ""
+
+    def cancel():
+        try:
+            driver.switch_to.window(win)
+            driver.execute_script("var b=document.getElementById('nbutton_BtnCancel-button');"
+                                  "if(b){b.click();}else if(window.closeThisWindow){closeThisWindow();}"
+                                  "else{window.close();}")
+        except Exception:
+            pass
+        time.sleep(0.5)
+        if win in driver.window_handles:
+            try:
+                driver.switch_to.window(win)
+                driver.close()
+            except Exception:
+                pass
+        driver.switch_to.window(driver.window_handles[0])
+
+    if not password:
+        if log:
+            log("  보안 문서인데 홈넷 비밀번호가 없어 열지 못합니다(① 계정에 비밀번호를 넣어 주세요).")
+        cancel()
+        return "failed"
+    driver.switch_to.window(win)
+    box = driver.find_element(By.ID, "Passwd")
+    box.clear()
+    box.send_keys(password)
+    driver.execute_script("var b=document.getElementById('nbutton_BtnSubmit-button');"
+                          "if(b){b.click();}else if(window.OkBtn_Click){OkBtn_Click();}")
+    stop = time.time() + 8
+    while time.time() < stop:
+        try:
+            a = driver.switch_to.alert             # '처리암호가 틀립니다' 등
+            msg = (a.text or "").strip()
+            a.accept()
+            if log:
+                log(f"  보안 문서 비밀번호가 맞지 않습니다: {msg[:60]}")
+            cancel()
+            return "failed"
+        except Exception:
+            pass
+        if win not in driver.window_handles:
+            if log:
+                log("  보안 문서라 홈넷 비밀번호를 넣어 열었습니다.")
+            return "unlocked"
+        time.sleep(0.4)
+    if log:
+        log("  보안 문서 비밀번호 창이 닫히지 않아 건너뜁니다.")
+    cancel()
+    return "failed"
+
+
 def dismiss_password(driver) -> None:
     """암호 입력 창을 닫는다([취소]/[닫기], 없으면 Esc)."""
     try:
@@ -334,7 +466,7 @@ def dismiss_password(driver) -> None:
 
 def clean_binder(raw: str) -> str:
     """대장의 편철 '임대보증금관계철(1)' → 기록물철 이름 '임대보증금관계철' (뒤의 (숫자)는 권호)."""
-    return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", (raw or "").strip())
+    return binder_rules.clean(raw)
 
 
 def parse_doc_info(raw: str) -> dict:
@@ -359,12 +491,16 @@ def parse_doc_info(raw: str) -> dict:
                 binder = val
                 break
     kind = re.search(r"구\s*분\s*[:：\t ]*\s*(생산|접수)", raw)
-    return {"binder_raw": binder, "binder": clean_binder(binder), "kind": kind.group(1) if kind else ""}
+    doc_no = re.search(r"문\s*서\s*번\s*호\s*[:：\t ]*\s*([^\s\t|]+-\d+)", raw)
+    day = re.search(r"기\s*안\s*일\s*자\s*[:：\t ]*\s*(\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2}\.?)", raw)
+    return {"binder_raw": binder, "binder": clean_binder(binder), "kind": kind.group(1) if kind else "",
+            "doc_no": doc_no.group(1) if doc_no else "",
+            "date": re.sub(r"\s+", "", day.group(1)) if day else ""}
 
 
 def read_doc_info(driver, viewer: str, log=None) -> dict:
     """[문서정보]를 열어 편철·구분을 읽는다. 읽지 못해도 빈 값으로 돌려준다(수집은 계속한다)."""
-    info = {"raw": "", "binder_raw": "", "binder": "", "kind": ""}
+    info = {"raw": "", "binder_raw": "", "binder": "", "kind": "", "doc_no": "", "date": ""}
     win = None
     try:
         driver.switch_to.window(viewer)
@@ -469,6 +605,17 @@ def wait_new_doc(driver, last_fp: str, log=None, tries: int = 6, password: str =
     attempt = 0
     while attempt < tries:
         attempt += 1
+        pw = unlock_pw_window(driver, "" if tried_pw else password, log)   # 따로 뜬 '처리암호' 창
+        if pw == "failed":
+            return "encrypted", None
+        if pw == "unlocked":
+            tried_pw = True
+            time.sleep(2)
+            viewer = _viewer_handle(driver, known) or _viewer_handle(driver)   # 열린 문서 창으로
+            if viewer:
+                driver.switch_to.window(viewer)
+            attempt = max(0, attempt - 1)
+            continue
         st = drain_alerts(driver, log, "" if tried_pw else password)
         if known:
             popup = _new_view_window(driver, known)
@@ -504,7 +651,9 @@ def wait_new_doc(driver, last_fp: str, log=None, tries: int = 6, password: str =
             if not doc["html"] and is_view_only(doc["text"]):      # 주소는 달라도 '조회' 표만 읽힌 경우
                 return "view", {"handle": driver.current_window_handle, "text": doc["text"],
                                 "title": view_title(doc["text"])}
-            doc["unlocked"] = tried_pw
+            doc["viewer"] = driver.current_window_handle     # 보안 문서는 문서 창이 새로 뜰 수 있다
+            doc["unlocked"] = tried_pw or doc["viewer"] in UNLOCKED_VIEWERS
+            UNLOCKED_VIEWERS.discard(doc["viewer"])
             return "doc", doc
         if not doc:
             unreadable += 1
@@ -564,9 +713,38 @@ def row_after(rows: list[dict], title: str) -> int | None:
     return None
 
 
-def open_first_doc(driver, keyword: str, log, after_title: str = "") -> str:
+CURRENT_PAGE = 1     # 마지막으로 연 대장 목록 쪽(다음 줄을 찾을 때 이 쪽부터 본다)
+
+
+def _shown(key) -> str:
+    return key if isinstance(key, str) else (key[-1] if key else "")
+
+
+def row_index(rows: list[dict], key) -> int | None:
+    """대장 목록 줄들에서 칸 글자가 key(제목 또는 문서번호, 여럿이면 그중 하나)와 같은 줄 번호.
+    문서번호를 먼저 견준다(같은 제목이 여러 줄이어도 헷갈리지 않게)."""
+    keys = [re.sub(r"\s+", "", k or "") for k in ((key,) if isinstance(key, str) else key)]
+    for k in [k for k in keys if k]:
+        for i, row in enumerate(rows):
+            if any(k == re.sub(r"\s+", "", t or "") for t in row.get("text", [])):
+                return i
+    return None
+
+
+_DOC_NO_RE = re.compile(r"(?:시행|접수)\s*([^\s()]+-\d+)")
+
+
+def doc_numbers(text: str) -> tuple:
+    """본문 아래 '시행 ○○관리소-123 (날짜) 접수 ○○-45'에서 문서번호들(대장의 등록번호와 견줄 것)."""
+    return tuple(dict.fromkeys(m.group(1) for m in _DOC_NO_RE.finditer(text or "")))
+
+
+def open_first_doc(driver, keyword: str, log, after_title: str = "", year: int | None = None,
+                   password: str = "", start_row: int = 0, page: int = 1) -> str:
     """기록물등록대장을 열어(검색어가 있으면 제목 검색) 맨 위 문서를 연다. 문서 창 핸들을 돌려준다.
-    after_title을 주면 그 제목 줄의 다음 줄 문서를 연다('조회' 화면에 [다음]이 없을 때 이어 가기)."""
+    after_title을 주면 그 제목 줄의 다음 줄 문서를 연다('조회' 화면에 [다음]이 없을 때 이어 가기).
+    year를 주면 그 해 대장(생산연도)에서 연다. 비우면 홈넷 기본(올해).
+    보안 문서면 password(홈넷 비밀번호)로 '처리암호' 창을 연다. 못 열면 그다음 줄 문서를 연다."""
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.by import By
 
@@ -574,8 +752,16 @@ def open_first_doc(driver, keyword: str, log, after_title: str = "") -> str:
 
     import ledger
     log("전자결재 → 대장관리 → 기록물등록대장을 엽니다..." if not after_title
-        else f"  대장 목록에서 '{after_title}' 다음 문서를 엽니다...")
+        else f"  대장 목록에서 '{_shown(after_title)}' 다음 문서를 엽니다...")
     ledger.open_register(driver)
+    if year:
+        if not after_title:
+            log(f"  연도: {year}년 대장")
+        try:
+            ledger.select_year(driver, year)
+        except ledger.LedgerError as ex:
+            driver.switch_to.default_content()
+            raise CollectError(str(ex)) from None
     if keyword.strip():
         log(f"  제목 검색: {keyword.strip()}")
         ledger.search_register(driver, keyword.strip())
@@ -590,28 +776,72 @@ def open_first_doc(driver, keyword: str, log, after_title: str = "") -> str:
             break
     else:
         driver.switch_to.default_content()
-        raise CollectError("기록물등록대장 목록에 문서가 없습니다." + (" 검색어를 확인해 주세요." if keyword else ""))
+        raise CollectError("기록물등록대장" + (f"({year}년)" if year else "") + " 목록에 문서가 없습니다."
+                           + (" 검색어를 확인해 주세요." if keyword else ""))
     time.sleep(1)
-    row = 0
+    global CURRENT_PAGE
+    pages = ledger.total_pages(driver)
+    page = max(1, min(page, pages))
+    rows = ledger.go_page(driver, page, keyword.strip()) if page > 1 else ledger.list_rows(driver)
+    row = start_row
     if after_title:
-        row = row_after(json.loads(driver.execute_script(ledger._JS_ROWS) or "[]"), after_title)
+        # 대장 목록은 한 쪽에 50줄이다. 문서 창의 [다음]은 쪽을 넘지 못하므로 목록에서 다음 줄(다음 쪽)을 찾는다.
+        row = None
+        for pg in range(page, min(pages, page + 3) + 1):
+            if pg != page:
+                rows = ledger.go_page(driver, pg, keyword.strip())
+            idx = row_index(rows, after_title)
+            if idx is None:
+                continue
+            page = pg
+            if idx + 1 < len(rows):
+                row = idx + 1
+            elif pg < pages:                       # 그 쪽 마지막 줄 → 다음 쪽 첫 줄
+                page = pg + 1
+                rows = ledger.go_page(driver, page, keyword.strip())
+                row = 0
+            break
         if row is None:
             driver.switch_to.default_content()
-            raise CollectError(f"대장 목록(첫 쪽)에서 '{after_title}' 다음 문서를 찾지 못했습니다.")
+            raise CollectError(f"대장 목록에서 '{_shown(after_title)}' 다음 문서를 찾지 못했습니다(마지막 문서일 수 있음).")
+    elif rows and row >= len(rows) and page < pages:   # 앞 쪽 끝을 넘은 줄 → 다음 쪽
+        row -= len(rows)
+        page += 1
+        rows = ledger.go_page(driver, page, keyword.strip())
+    CURRENT_PAGE = page
+    if page > 1 and not after_title and start_row == 0:
+        log(f"  대장 {page}쪽")
     before = frozenset(driver.window_handles)
     how = driver.execute_script(_JS_OPEN_ROW, row)
 
+    unlocked_here = False
+
     def wait_viewer(sec):
+        nonlocal unlocked_here
         stop = time.time() + sec
         while time.time() < stop:
             drain_alerts(driver)
+            pw = unlock_pw_window(driver, password, log)      # 보안 문서: '처리암호' 창
+            if pw == "failed":
+                return "LOCKED"
+            if pw == "unlocked":
+                unlocked_here = True
+                stop = max(stop, time.time() + 10)            # 비밀번호를 넣은 뒤 문서 창을 충분히 기다린다
             h = _viewer_handle(driver, before)
             if h:
                 return h
             time.sleep(0.5)
         return None
 
+    def next_row():
+        if row >= 30:
+            raise CollectError("보안 문서를 열지 못해 대장의 문서를 열 수 없습니다.")
+        log("  보안 문서를 열지 못해 그다음 문서를 엽니다.")
+        return open_first_doc(driver, keyword, log, year=year, password=password, start_row=row + 1, page=page)
+
     handle = wait_viewer(8) if how not in ("none", "empty") else None
+    if handle == "LOCKED":
+        return next_row()
     if handle is None:                     # 함수로 안 열리면 첫 줄을 실제로 더블클릭한다
         import homnet
         driver.switch_to.window(homnet.main_window(driver))
@@ -625,9 +855,13 @@ def open_first_doc(driver, keyword: str, log, after_title: str = "") -> str:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
             ActionChains(driver).move_to_element(target).double_click(target).perform()
             handle = wait_viewer(15)
+            if handle == "LOCKED":
+                return next_row()
     if handle is None:
         raise CollectError("대장의 문서를 자동으로 열지 못했습니다. 기록물등록대장에서 첫 문서를 "
                            "더블클릭해 연 뒤 다시 실행해 주세요.")
+    if unlocked_here:
+        UNLOCKED_VIEWERS.add(handle)
     log("✅ 대장 문서 창을 열었습니다.")
     return handle
 
@@ -1024,7 +1258,8 @@ def make_pdfs(driver, out_dir: str, names: list, log=print, extra=(), keep_phone
 def import_to_templates(out_dir: str, names: list, dest: str, log=print, area: str = "주택관리") -> list:
     """수집한 문서({이름}.txt + .html + .meta.json)를 서식 파일로 바꿔 dest 폴더에 넣는다.
 
-    area: 서식이 놓일 분야. 이미 같은 이름의 서식이 있으면 '(2)'처럼 붙여 덮어쓰지 않는다.
+    area: 서식이 놓일 분야. '자동(편철)'이면 문서마다 편철(없으면 제목)로 분야를 정한다.
+    서식 고르기에서는 편철 이름 묶음으로 보인다. 이미 같은 이름의 서식이 있으면 '(2)'처럼 붙여 덮어쓰지 않는다.
     만든 파일 경로 목록을 돌려준다.
     """
     import doc_template
@@ -1032,9 +1267,13 @@ def import_to_templates(out_dir: str, names: list, dest: str, log=print, area: s
     made = []
     for name in names:
         src = os.path.join(out_dir, name + ".txt")
+        doc_area = area
+        if area == binder_rules.AUTO:
+            m = read_meta(out_dir, name)
+            doc_area = binder_rules.area_for(m.get("편철", ""), m.get("제목", "") or name)
         try:
             with open(src, encoding="utf-8-sig") as f:
-                text = doc_template.from_collected(f.read(), src, area)
+                text = doc_template.from_collected(f.read(), src, doc_area)
             doc_template.parse(text, src)                     # 서식으로 읽히는지 확인
         except (OSError, ValueError, UnicodeDecodeError) as ex:
             log(f"  서식으로 바꾸지 못함: {name} ({ex})")
@@ -1050,6 +1289,7 @@ def import_to_templates(out_dir: str, names: list, dest: str, log=print, area: s
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         made.append(path)
+        log(f"  서식: {os.path.basename(path)} → [{doc_area}] {doc_template.parse(text, path).bundle}")
     return made
 
 
@@ -1145,8 +1385,9 @@ def mark_finished(out_dir: str) -> None:
 
 def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = False,
             password: str = "", keyword: str = "", auto_open: bool = True, pdf: bool = False,
-            attachments: bool = False, extra=(), keep_phones=(), stop=None,
-            resume: bool = False, settings: dict | None = None) -> dict:
+            attachments: bool = False, extra=(), keep_phones=(), stop=None, binders=(),
+            year: int | None = None, dedupe: bool = True, resume: bool = False,
+            settings: dict | None = None) -> dict:
     """대장 문서부터 count개를 살펴보고 저장한다. 파일 이름은 문서 제목과 같다.
 
     - 대장 문서 창이 없고 auto_open이면 기록물등록대장을 열어 맨 위 문서부터 시작한다(keyword로 검색 가능).
@@ -1163,23 +1404,36 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
     - 문서 하나를 볼 때마다 out_dir\\_이어받기.json에 어디까지 봤는지 적는다. resume이면 그 파일을 읽어
       마지막으로 본 문서의 다음 문서부터 이어 받는다(앞서 받은 문서·셈은 그대로 이어진다).
     - settings: 받기 설정(대화상자에서 고른 것). 이어 받을 때 그대로 쓰도록 진행 상태에 같이 적는다.
+    - binders: 받을 편철 낱말(예: ['교육훈련', '시설관리']). 비우면 모든 편철. 다른 편철 문서는 건너뛴다.
+    - year: 그 해(생산연도) 대장에서 받는다. 비우면 올해. 연도를 고르면 미리 열어 둔 문서 창은 쓰지 않는다.
+    - dedupe: 날짜·월·동호수만 다른 비슷한 제목(예: '…급여 지급(2025.12월분)'·'(2025.11월분)')은
+      처음 것 하나만 받는다.
+    - 보안 문서(비밀번호로 연 문서)는 저장하기 전에 이름·동호수·연락처·주민번호를 OOO으로 바꾼다.
+    - 끝나면 편철별 목록(편철별_목록.csv)과 편철별 폴더(편철별\\{편철}\\, 가린 PDF·첨부)를 만든다.
     """
     import json
     os.makedirs(out_dir, exist_ok=True)
+    off_binder = 0
     state = load_progress(out_dir) if resume else {}
-    resume_key = state.get("title") or "" if resume else ""
+    saved_key = state.get("key")
+    saved_key = tuple(saved_key) if isinstance(saved_key, list) else (saved_key or state.get("title") or "")
+    resume_key = saved_key if resume else ""
     if resume_key:
         log(f"⏩ 지난번 멈춘 곳 다음부터 이어 받습니다({state.get('done', 0)}/{count}개째까지 봄, "
-            f"마지막 문서: {resume_key}).")
-        handle = open_first_doc(driver, keyword, log, after_title=resume_key)
+            f"마지막 문서: {state.get('title') or _shown(resume_key)}).")
+        handle = open_first_doc(driver, keyword, log, after_title=resume_key, year=year, password=password,
+                                page=int(state.get("page") or 1))
     else:
         try:
+            if year and auto_open:                # 연도를 골랐으면 그 해 대장 맨 위부터
+                raise CollectError("")
             handle = find_viewer(driver)          # 미리 열어 둔 대장 문서 창이 있으면 그 문서부터
         except CollectError:
             if not auto_open:
                 raise
-            handle = open_first_doc(driver, keyword, log)
+            handle = open_first_doc(driver, keyword, log, year=year, password=password)
     index, last, saved, internal, skipped, encrypted, used = [], "", 0, 0, 0, 0, set()
+    similar, seen_keys = 0, {}
     names, unlocked, views = [], 0, 0
     att = {"files": 0, "pdf": 0, "masked": 0, "other": [], "scanned": [], "locked": []}
     consecutive_enc = 0
@@ -1195,15 +1449,19 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
         saved, internal, skipped = c.get("saved", 0), c.get("internal", 0), c.get("skipped", 0)
         encrypted, unlocked, views = c.get("encrypted", 0), c.get("unlocked", 0), c.get("views", 0)
         att.update(c.get("attach") or {})
+        similar, off_binder = c.get("similar", 0), c.get("off_binder", 0)
+        seen_keys = dict(c.get("seen_keys") or {})
     state.update(settings=settings if settings is not None else state.get("settings", {}),
                  count=count, finished=False)
     error = ""
 
     def checkpoint(n: int) -> None:
         """문서 n개째까지 봤다고 적는다(이어 받을 때 cur_title 다음 문서부터)."""
-        state.update(done=n, title=cur_title, key="", page=1, names=names, index=index,
+        state.update(done=n, title=cur_title, key=list(cur_key) if isinstance(cur_key, tuple) else cur_key,
+                     page=CURRENT_PAGE, names=names, index=index,
                      counts={"saved": saved, "internal": internal, "skipped": skipped, "encrypted": encrypted,
-                             "unlocked": unlocked, "views": views, "attach": att})
+                             "unlocked": unlocked, "views": views, "attach": att, "similar": similar,
+                             "off_binder": off_binder, "seen_keys": seen_keys})
         save_progress(out_dir, state)
 
     def halted() -> bool:
@@ -1213,19 +1471,22 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
             log("⏹ 중단: 여기까지 받은 문서만 정리합니다.")
         return stopped
 
-    def reopen_after(title: str) -> str | None:
+    def reopen_after(title) -> str | None:
         """[다음]으로 못 넘어갈 때: 지금 창을 닫고 대장 목록에서 title 다음 줄 문서를 연다."""
         if not (auto_open and title):
             return None
         _close_window(driver, handle)
         try:
-            return open_first_doc(driver, keyword, log, after_title=title)
+            return open_first_doc(driver, keyword, log, after_title=title, year=year, password=password,
+                                  page=CURRENT_PAGE)
         except CollectError as ex:
             log(f"  {ex}")
             return None
 
     try:
-        for n in range(start + 1, count + 1):
+        cur_key, same_in_row, n = resume_key, 0, start
+        while n < count:
+            n += 1
             if halted():
                 break
             try:
@@ -1234,14 +1495,26 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                 raise CollectError("문서 창이 닫혀 있어 여기서 멈춥니다.")
             status, doc = wait_new_doc(driver, last, log, password=password, known=known)
             if status == "same":
-                log("마지막 문서이거나 다음 문서로 넘어가지 않아 여기서 멈춥니다.")
-                break
+                # 대장 목록 한 쪽(50줄)의 마지막 문서에서는 [다음]이 넘어가지 않는다 → 목록의 다음 쪽에서 이어 간다
+                handle = reopen_after(cur_key or cur_title)
+                if handle is None:
+                    log("마지막 문서이거나 다음 문서로 넘어가지 않아 여기서 멈춥니다.")
+                    break
+                last, known = "", frozenset(driver.window_handles)
+                same_in_row += 1
+                if same_in_row >= 3:
+                    log("다음 문서로 계속 넘어가지 않아 여기서 멈춥니다.")
+                    break
+                n -= 1                               # 문서를 본 것이 아니므로 셈하지 않는다
+                continue
+            same_in_row = 0
             if status == "view":
                 views += 1
                 title = doc["title"] or "(제목 못 읽음)"
                 log(f"  {n}/{count} 저장하지 않음('조회' 화면·본문 없음): {title}")
                 repeat = bool(doc["title"]) and doc["title"] == last_view
                 last_view, cur_title = doc["title"], doc["title"]
+                cur_key = doc_numbers(doc.get("text", "")) + (doc["title"],)
                 checkpoint(n)
                 if doc["handle"] != handle:                     # 새 창으로 뜬 '조회' 화면은 닫고 문서 창으로
                     _close_window(driver, doc["handle"])
@@ -1252,7 +1525,7 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                     break
                 known = frozenset(driver.window_handles)
                 if repeat or doc["handle"] == handle and not click_next(driver):
-                    handle = reopen_after(cur_title)
+                    handle = reopen_after(cur_key or cur_title)
                     if handle is None:
                         log("'조회' 화면 다음 문서로 넘어가지 못해 여기서 멈춥니다.")
                         break
@@ -1273,10 +1546,23 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                     break
             else:
                 consecutive_enc = 0
+                if doc.get("viewer") and doc["viewer"] != handle:   # 보안 문서를 비밀번호로 열면 문서 창이 바뀐다
+                    if handle in driver.window_handles:
+                        _close_window(driver, handle)
+                    handle = doc["viewer"]
+                    driver.switch_to.window(handle)
                 last = fingerprint(doc["text"])
+                raw_title = extract_meta(doc["text"])["title"]
+                cur_key = doc_numbers(doc["text"]) + (raw_title,)   # 목록에서 이 문서 줄을 찾을 열쇠(가리기 전)
+                if doc.get("unlocked"):            # 보안 문서: 받은 글자부터 인적사항을 OOO으로 바꿔 둔다
+                    doc = _mask_secure_doc(doc, extra, keep_phones)
                 meta = extract_meta(doc["text"])
                 cur_title = meta["title"]
-                if only_internal and other_receiver(meta):
+                key = similar_key(meta["title"])
+                if dedupe and key and key in seen_keys:
+                    similar += 1
+                    log(f"  {n}/{count} 건너뜀(비슷한 제목을 이미 받음 — '{seen_keys[key]}'): {meta['title']}")
+                elif only_internal and other_receiver(meta):
                     skipped += 1
                     log(f"  {n}/{count} 건너뜀(수신자 있음·접수): {meta['title'] or '(제목 못 읽음)'}")
                 else:
@@ -1284,6 +1570,10 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                     if only_internal and info["kind"] == "접수":
                         skipped += 1
                         log(f"  {n}/{count} 건너뜀(접수): {meta['title'] or '(제목 못 읽음)'}")
+                    elif not binder_rules.matches(info["binder"], binders):
+                        off_binder += 1
+                        log(f"  {n}/{count} 건너뜀(편철 '{info['binder'] or '못 읽음'}'은 고른 편철 아님): "
+                            f"{meta['title'] or '(제목 못 읽음)'}")
                     else:
                         name = safe_name(meta["title"], n, used)
                         with open(os.path.join(out_dir, name + ".txt"), "w", encoding="utf-8") as f:
@@ -1292,12 +1582,20 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                             with open(os.path.join(out_dir, name + ".html"), "w", encoding="utf-8") as f:
                                 f.write(doc["html"])
                         if info["raw"]:
+                            raw = info["raw"]
+                            if doc.get("unlocked"):
+                                raw = privacy.mask_text(raw, found=doc.get("secure_found", []))[0]
                             with open(os.path.join(out_dir, name + ".info.txt"), "w", encoding="utf-8") as f:
-                                f.write(info["raw"])
+                                f.write(raw)
                         with open(os.path.join(out_dir, name + ".meta.json"), "w", encoding="utf-8") as f:
                             json.dump({"제목": meta["title"], "수신자": meta["receiver"], "구분": info["kind"],
-                                       "편철": info["binder"], "편철원문": info["binder_raw"]},
+                                       "편철": info["binder"], "편철원문": info["binder_raw"],
+                                       "문서번호": info.get("doc_no", ""), "기안일자": info.get("date", ""),
+                                       "분야": binder_rules.area_for(info["binder"], meta["title"]),
+                                       "보안문서": bool(doc.get("unlocked"))},
                                       f, ensure_ascii=False, indent=1)
+                        if key:
+                            seen_keys[key] = meta["title"]
                         index.append(index_line(saved + 1, meta, len(doc["text"]), name)
                                      + f" | 편철: {info['binder'] or '-'}")
                         saved += 1
@@ -1314,7 +1612,7 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                 break
             known = frozenset(driver.window_handles)
             if not click_next(driver):
-                handle = reopen_after(cur_title)                # [다음]이 없으면 대장 목록에서 다음 줄로
+                handle = reopen_after(cur_key or cur_title)     # [다음]이 없으면 대장 목록에서 다음 줄로
                 if handle is None:
                     log("[다음] 버튼을 찾지 못해 여기서 멈춥니다.")
                     break
@@ -1341,9 +1639,69 @@ def collect(driver, out_dir: str, count: int, log=print, only_internal: bool = F
                 log(f"⚠ PDF를 만드는 중 오류: {type(ex).__name__}: {ex} (다음에 이어 받을 때 다시 만듭니다)")
                 error = error or f"PDF 만들기 오류: {ex}"
         pdfs = sum(os.path.isfile(os.path.join(out_dir, "PDF", x + ".pdf")) for x in names)
+    try:
+        by_binder = organize_by_binder(out_dir, names, log)
+    except Exception as ex:
+        log(f"⚠ 편철별 정리 중 오류: {type(ex).__name__}: {ex}")
+        by_binder = {}
     state["finished"] = not (stopped or error)
     save_progress(out_dir, state)
     return {"pdfs": pdfs, "attach": att, "saved": saved, "internal": internal, "skipped": skipped, "encrypted": encrypted,
             "unlocked": unlocked, "views": views, "names": names, "dir": out_dir, "stopped": stopped,
-            "error": error, "resumed": bool(resume_key), "done": state.get("done", 0), "count": count}
+            "error": error, "resumed": bool(resume_key), "done": state.get("done", 0), "count": count,
+            "off_binder": off_binder, "by_binder": by_binder, "similar": similar}
+
+
+NO_BINDER = "편철 못 읽음"
+
+
+def read_meta(out_dir: str, name: str) -> dict:
+    import json
+    try:
+        with open(os.path.join(out_dir, name + ".meta.json"), encoding="utf-8-sig") as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def organize_by_binder(out_dir: str, names: list, log=print) -> dict:
+    """받은 문서를 편철별로 정리한다. {편철: [이름 …]}
+
+    - 편철별_목록.csv : 번호·편철·분야·구분·문서번호·기안일자·제목·파일 (엑셀로 열림)
+    - 편철별\\{편철}\\ : 그 편철 문서의 가린 PDF와 첨부 폴더를 복사(가리지 않은 txt·html은 넣지 않음)
+    """
+    import csv
+    import shutil
+    groups: dict[str, list] = {}
+    rows = []
+    for name in names:
+        m = read_meta(out_dir, name)
+        binder = (m.get("편철") or "").strip() or NO_BINDER
+        groups.setdefault(binder, []).append(name)
+        rows.append((binder, m, name))
+    if not rows:
+        return groups
+    rows.sort(key=lambda r: (r[0] == NO_BINDER, r[0]))           # 편철 이름 차례, 못 읽은 것은 맨 뒤
+    with open(os.path.join(out_dir, "편철별_목록.csv"), "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["번호", "편철", "편철원문", "분야", "구분", "문서번호", "기안일자", "제목", "파일"])
+        for i, (binder, m, name) in enumerate(rows, 1):
+            w.writerow([i, binder, m.get("편철원문", ""), m.get("분야", ""), m.get("구분", ""),
+                        m.get("문서번호", ""), m.get("기안일자", ""), m.get("제목", ""), name])
+    root = os.path.join(out_dir, "편철별")
+    for binder, mine in groups.items():
+        folder = os.path.join(root, safe_name(binder, 0, set()))
+        for name in mine:
+            pdf = os.path.join(out_dir, "PDF", name + ".pdf")
+            att = os.path.join(out_dir, "첨부", name)
+            try:
+                if os.path.isfile(pdf):
+                    os.makedirs(folder, exist_ok=True)
+                    shutil.copy2(pdf, os.path.join(folder, name + ".pdf"))
+                if os.path.isdir(att):
+                    shutil.copytree(att, os.path.join(folder, "첨부", name), dirs_exist_ok=True)
+            except OSError as ex:
+                log(f"  편철별 폴더에 넣지 못함: {name} ({ex})")
+    log("편철별 정리: " + ", ".join(f"{b} {len(v)}건" for b, v in sorted(groups.items())))
+    return groups
 

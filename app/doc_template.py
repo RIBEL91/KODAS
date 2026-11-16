@@ -26,6 +26,8 @@
 - {날짜:항목|형식}                     : 같은 항목은 한 번만 입력. 형식은 아래 FORMATS
 - {입력:항목}                         : 글자로 직접 적는 칸(예: 날짜를 2026. 10. 25.처럼 수기로)
 - {입력:항목=처음값}                   : 처음 값이 들어 있는 입력칸
+- {선택:항목=36|46|51}                 : 체크해서 고르는 칸(여러 개 가능). 고른 것을 '36, 51'처럼 넣는다
+- {선택값:항목}                        : 표 줄에 쓰면 고른 것마다 그 줄을 하나씩 만들고 이 자리에 그 값을 넣는다
 - {숫자:항목} {숫자:항목=3200}          : 숫자 칸(1,234처럼 쉼표를 넣어 보여 준다)
 - {금액:항목}                         : 금액 칸. 113560 → 금113,560원(금일십일만삼천오백육십원)
 - {계산:이름=식}                       : 다른 칸으로 계산한 값. 예: {계산:금액=수량*단가}
@@ -49,6 +51,9 @@ WEEKDAYS = "월화수목금토일"
 DATE_RE = re.compile(r"\{날짜:([^{}|]+)(?:\|([^{}]+))?\}")
 INPUT_RE = re.compile(r"\{입력:([^{}|=]+)(?:=([^{}]*))?\}")      # 수기 입력 칸: 적은 글자 그대로 들어간다
 NUM_RE = re.compile(r"\{(숫자|금액):([^{}|=]+)(?:=([^{}]*))?\}")  # 숫자·금액 칸(값은 '입력:이름'에 담긴다)
+CHOICE_RE = re.compile(r"\{선택:([^{}|=]+)=([^{}]*)\}")           # 체크해서 고르는 칸: {선택:형별=36|46|51}
+CHOICE_ROW_RE = re.compile(r"\{선택값:([^{}|=]+)\}")              # 고른 것마다 줄을 되풀이하는 자리
+CHOICE_SEP = ", "
 CALC_RE = re.compile(r"\{계산:([^{}=]+)=([^{}]+)\}")
 COMPLEX_RE = re.compile(r"\{단지:([^{}|=]+)\}")
 TYPE_RE = re.compile(r"\{유형:([^{}]+)\}")     # {유형:영구=제10조|국민·행복=제9조}: 기본정보의 임대유형에 맞는 글자만
@@ -304,7 +309,15 @@ class Template:
         text = self._all_text() + "\n" + "\n".join(self.extras)
         found = [(m.start(), m.group(1).strip(), "입력", m.group(2)) for m in INPUT_RE.finditer(text)]
         found += [(m.start(), m.group(2).strip(), m.group(1), m.group(3)) for m in NUM_RE.finditer(text)]
+        found += [(m.start(), m.group(1).strip(), "선택", "") for m in CHOICE_RE.finditer(text)]
         return sorted(found)
+
+    def input_options(self) -> dict[str, list[str]]:
+        """{선택:항목=36|46|51} 칸 이름 → 고를 것들(처음 나온 것 기준)."""
+        out: dict[str, list[str]] = {}
+        for m in CHOICE_RE.finditer(self._all_text() + "\n" + "\n".join(self.extras)):
+            out.setdefault(m.group(1).strip(), [x.strip() for x in m.group(2).split("|") if x.strip()])
+        return out
 
     def input_fields(self) -> list[str]:
         """{입력:항목}·{숫자:항목}·{금액:항목} 칸 이름. 처음 나온 순서, 같은 항목은 한 번만."""
@@ -475,6 +488,10 @@ def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> st
         v = _input_value(values, m.group(1).strip(), m.group(2))
         return v if v else m.group(0)
 
+    def choice_sub(m):
+        v = _input_value(values, m.group(1).strip(), "")
+        return v if v else "{" + m.group(1).strip() + "}"     # 안 골랐으면 미리보기에 {형별}처럼
+
     def num_sub(m):
         v = _input_value(values, m.group(2).strip(), m.group(3))
         if not v:
@@ -485,12 +502,36 @@ def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> st
         return COMPLEX.get(m.group(1).strip(), "").strip() or m.group(0)
 
     text = TYPE_RE.sub(lambda m: _type_sub(m.group(1), normalize_rent_type(values.get("임대유형"))), text)
+    text = CHOICE_RE.sub(choice_sub, repeat_choice_rows(text, values))
     calcs = calcs_in(text)
     if calcs:
         results = compute(calcs, _calc_env([text] + list(extras or []), values))
         text = CALC_RE.sub(lambda m: results.get(m.group(1).strip(), m.group(0)), text)
     text = COMPLEX_RE.sub(complex_sub, NUM_RE.sub(num_sub, DATE_RE.sub(date_sub, text)))
     return FIELD_RE.sub(field_sub, INPUT_RE.sub(input_sub, text))
+
+
+def chosen(values: dict, name: str) -> list[str]:
+    """{선택:이름=…} 칸에서 고른 것들."""
+    raw = str(values.get("입력:" + name, "") or "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def repeat_choice_rows(text: str, values: dict) -> str:
+    """{선택값:이름}이 든 줄을 고른 것마다 한 줄씩 되풀이한다. 아무것도 안 골랐으면 그대로 둔다.
+    예: '| {선택값:형별} | | |' + 형별 36, 51 → '| 36 | | |' / '| 51 | | |'"""
+    if "{선택값:" not in text:
+        return text
+    out = []
+    for line in text.split("\n"):
+        names = list(dict.fromkeys(m.group(1).strip() for m in CHOICE_ROW_RE.finditer(line)))
+        picks = chosen(values, names[0]) if names else []
+        if not picks:
+            out.append(line)
+            continue
+        for v in picks:
+            out.append(CHOICE_ROW_RE.sub(lambda m, v=v: v if m.group(1).strip() == names[0] else m.group(0), line))
+    return "\n".join(out)
 
 
 def _calc_env(texts: list[str], values: dict) -> dict:
@@ -1227,8 +1268,10 @@ def from_collected(text: str, path: str = "", area: str = "주택관리") -> str
         except (OSError, ValueError):
             binder = ""
     memo = "홈넷 대장에서 모은 문서로 만든 서식 — 쓰기 전에 남은 개인정보가 없는지 확인하세요."
+    bundle = group
     if binder:
         memo += f" 원본 편철: {binder}"
+        bundle = f"편철 · {binder}"                       # 서식 고르기에서 편철별로 묶어 보인다
     head = (f"제목: {title}\n수신자: {receiver}\n구분: {group}\n분야: {area or '주택관리'}\n"
-            f"묶음: {group}\n메모: {memo}\n")
+            f"묶음: {bundle}\n메모: {memo}\n")
     return f"{head}---\n{body_text}\n"

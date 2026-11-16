@@ -15,6 +15,7 @@ LeavePromotion homnet_draft.py에서 실제 DOM으로 검증한 구조와 처리
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 from dataclasses import dataclass, field
@@ -755,10 +756,12 @@ def probe_hwp(driver) -> dict:
     return info
 
 
-def insert_body(driver, draft_handle: str, body_html: str, log, subcase: int = 0) -> bool:
+def insert_body(driver, draft_handle: str, body_html: str, log, subcase: int = 0,
+                fit_spacing: bool = False) -> bool:
     """본문 HTML을 웹한글에 넣는다. 본문 누름틀이 없으면 False(사용자가 붙여넣기).
 
     subcase: 0이면 1안. 안마다 본문 누름틀이 따로 있으면 그 순서로 고른다.
+    fit_spacing: [올바른 문서 만들기]를 눌렀으면 낱말이 끊긴 줄의 자간을 맞춘다.
     """
     driver.switch_to.window(draft_handle)
     log("웹한글 기안기 준비를 기다립니다...")
@@ -787,9 +790,101 @@ def insert_body(driver, draft_handle: str, body_html: str, log, subcase: int = 0
         apply_para_marks(driver, body_html, log)
         apply_tab_marks(driver, body_html, log, target)
         apply_table_fonts(driver, body_html, log)
+        if fit_spacing:
+            apply_fit_spacing(driver, log, target)
     finally:
         driver.switch_to.default_content()
     return True
+
+
+# 자간으로 줄 맞추기: 웹한글은 '글자' 단위로 줄을 나눠 '관리비예 / 치금'처럼 낱말 가운데서 끊는다.
+# 어절 단위로 바꾸면 빈칸이 크게 벌어지므로, 끊긴 줄만 골라 자간을 1%씩 줄이거나(낱말을 윗줄로)
+# 늘려서(낱말을 아랫줄로) 덜 바꾸는 쪽으로 맞춘다. 줄 번호는 KeyIndicator()로 잰다.
+# 본문 누름틀의 바깥 문단(list 0)만 다룬다 — 표 칸은 건드리지 않는다.
+FIT_MAX_PCT = 10
+_JS_FIT_SPACING = r"""
+var h = window.HwpCtrl, field = arguments[0], maxStep = arguments[1] || 10;
+var out = {fixed: [], failed: [], errs: []};
+var LANG = ['SpacingHangul', 'SpacingLatin', 'SpacingHanja', 'SpacingJapanese', 'SpacingOther', 'SpacingSymbol', 'SpacingUser'];
+function lineOf(p, i) { h.SetPos(0, p, i); var k = h.KeyIndicator(); return k.prnpageno * 10000 + k.line; }
+function chars(p, n) {
+  var c = [];
+  for (var i = 0; i < n; i++) {
+    var t = '';
+    try { h.SelectText(p, i, p, i + 1); t = String(h.GetTextFile('UNICODE', 'saveblock') || ''); } catch (e) {}
+    c.push(t.replace(/[\r\n]/g, ''));
+  }
+  try { h.Run('Cancel'); } catch (e) {}
+  return c;
+}
+function isGap(t) { return !t || /^\s+$/.test(t); }
+function spacing(p, a, b, delta) {          // [a, b) 글자의 자간을 delta(%)만큼 바꾼다
+  h.SelectText(p, a, p, b);
+  var act = h.CreateAction('CharShape'), s = act.CreateSet(); act.GetDefault(s);
+  for (var k = 0; k < LANG.length; k++) { var v = Number(s.Item(LANG[k])) || 0; s.SetItem(LANG[k], v + delta); }
+  act.Execute(s);
+  try { h.Run('Cancel'); } catch (e) {}
+}
+function lineStarts(p, n) {
+  var st = [0], prev = lineOf(p, 0);
+  for (var i = 1; i <= n; i++) { var l = lineOf(p, i); if (l !== prev) { st.push(i); prev = l; } }
+  return st;
+}
+try {
+  h.MoveToField(field, true, true, false); var s0 = h.GetPos();
+  h.MoveToField(field, true, false, false); var s1 = h.GetPos();
+  for (var p = s0.para; p <= s1.para; p++) {
+    h.SetPos(0, p, 99999); var n = h.GetPos().pos;
+    if (n < 2) continue;
+    var c = chars(p, n), skip = {};
+    for (var guard = 0; guard < 40; guard++) {
+      var st = lineStarts(p, n), bad = -1, li = -1;
+      for (var j = 1; j < st.length; j++) {
+        var b = st[j];
+        if (!skip[b] && !isGap(c[b - 1]) && !isGap(c[b])) { bad = b; li = j; break; }
+      }
+      if (bad < 0) break;
+      var ls = st[li - 1], ws = bad, we = bad;
+      while (ws > ls && !isGap(c[ws - 1])) ws--;
+      while (we < n && !isGap(c[we])) we++;
+      var word = c.slice(ws, we).join(''), lineNo = lineOf(p, ls), done = false;
+      for (var k = 1; k <= maxStep && !done; k++) {
+        spacing(p, ls, we, -k);                                   // 줄이기: 줄 처음 ~ 낱말 끝
+        if (lineOf(p, we - 1) === lineNo) { out.fixed.push([word, -k]); done = true; break; }
+        spacing(p, ls, we, k);
+        if (ws > ls) {                                            // 늘리기: 줄 처음 ~ 낱말 앞
+          spacing(p, ls, ws, k);
+          if (lineOf(p, ws) !== lineNo && lineOf(p, ws - 1) === lineNo) { out.fixed.push([word, k]); done = true; break; }
+          spacing(p, ls, ws, -k);
+        }
+      }
+      if (!done) { out.failed.push(word); skip[bad] = true; }
+    }
+  }
+  try { h.MovePos(2); } catch (e) {}
+} catch (e) { out.errs.push(String(e)); }
+return JSON.stringify(out);
+"""
+
+
+def apply_fit_spacing(driver, log, field: str) -> bool:
+    """낱말 가운데서 끊긴 줄의 자간을 조절해 낱말이 한 줄에 들어가게 한다. 다 맞췄으면 True."""
+    try:
+        driver.set_script_timeout(120)
+        res = json.loads(driver.execute_script(_JS_FIT_SPACING, field, FIT_MAX_PCT) or "{}")
+    except Exception as ex:
+        res = {"errs": [str(ex).splitlines()[0][:120]]}
+    fixed, failed, errs = res.get("fixed", []), res.get("failed", []), res.get("errs", [])
+    if errs:
+        log(f"⚠️ 자간 맞춤을 하지 못했습니다 {errs}. 끊긴 줄을 골라 Alt+Shift+N(좁게)/W(넓게)로 맞춰 주세요.")
+        return False
+    if fixed:
+        log(f"✅ 자간 맞춤 {len(fixed)}곳: " + ", ".join(f"'{w}' {p:+d}%" for w, p in fixed))
+    else:
+        log("✅ 자간 맞춤: 낱말이 끊긴 줄이 없습니다")
+    if failed:
+        log(f"⚠️ 자간 ±{FIT_MAX_PCT}% 안에서 맞추지 못한 낱말: {', '.join(failed)} — 직접 확인해 주세요.")
+    return not failed
 
 
 _JS_FIELD_HAS = r"""
@@ -984,6 +1079,85 @@ return [best, bestTitle];
 """
 
 
+# 문서번호(등록번호)가 꼭 맞는 줄: 칸 글자가 번호와 같거나, 번호만 적었으면 '…-번호'로 끝나는 줄
+_JS_PICK_NO = r"""
+var no = arguments[0], o = window.DocumentList;
+if (!o) return [-2, ''];
+for (var i = 0; i < o.GetListCount(); i++) {
+  var hit = false, title = '';
+  for (var c = 0; c < 16; c++) {
+    var t; try { t = String(o.GetItemText(i, c)).trim(); } catch (e) { break; }
+    if (t === no || (no.indexOf('-') < 0 && t.slice(-(no.length + 1)) === '-' + no)) hit = true;
+    if (t.length > title.length && t.indexOf('-') < 0 && !/^[0-9]+$/.test(t)) title = t;
+  }
+  if (hit) return [i, title];
+}
+return [-1, ''];
+"""
+
+# 생산연도 고르기: 지금 해에서 못 찾으면 지난해들에서도 찾는다
+_JS_YEARS = r"""
+var o = window.CreateYearCombo, r = [];
+if (!o) return r;
+for (var i = 0; i < o.GetItemCount(); i++) { try { r.push(String(o.GetItemText ? o.GetItemText(i) : o.GetID(i))); } catch (e) { r.push(''); } }
+return r;
+"""
+
+
+def _search_rows(driver, link: DocLink, log) -> tuple[int, str]:
+    """문서링크 창에서 link를 찾아 (줄 번호, 제목). 못 찾으면 (-1, '')."""
+    # 홈넷 등록번호 검색은 번호(숫자)만 받는다('가나관리소-1234'로 찾으면 안 나옴) → 숫자로 찾고 전체 번호로 고른다
+    key = re.sub(r"^.*-", "", link.doc_no) if link.doc_no else link.search
+
+    def run_search():
+        driver.execute_script("document.getElementById('searchType').value = arguments[1];"
+                              "document.getElementById('editSearchCondition').value = arguments[0]; search(1, 1);",
+                              key, "docnum" if link.doc_no else "title")
+        time.sleep(2)                    # 검색 전 목록이 아니라 새 목록에서 고르도록
+        idx, picked, end = -1, "", time.time() + 15
+        while time.time() < end and idx < 0:
+            time.sleep(0.6)
+            msg = _accept_alert(driver)  # '검색 결과가 없습니다' 등
+            if msg:
+                log(f"  문서링크 메시지: {msg}")
+            try:
+                if link.doc_no:
+                    r = driver.execute_script(_JS_PICK_NO, link.doc_no)
+                else:
+                    r = driver.execute_script(_JS_PICK_ROW, list(link.title_has), list(link.exclude),
+                                              list(link.prefer), link.min_prefer)
+            except Exception:            # 목록을 다시 그리는 중
+                r = None
+            idx, picked = (r[0], r[1]) if isinstance(r, list) and len(r) == 2 else (-1, "")
+            if idx == -1 and link.doc_no and time.time() > end - 9:
+                break                    # 목록은 떴는데 맞는 번호가 없다
+        return idx, picked
+
+    try:
+        years = [str(y) for y in driver.execute_script(_JS_YEARS)]
+    except Exception:
+        years = []
+    if link.doc_no and link.year:        # 연도를 적었으면(…-12(2025. 1. 2.)) 그 해 대장에서만 찾는다
+        if link.year not in years:
+            log(f"  {link.doc_no}: 문서링크 창에 {link.year}년 대장이 없습니다")
+            return -1, ""
+        driver.execute_script("CreateYearCombo.SetCurSel(arguments[0]);", years.index(link.year))
+        return run_search()
+    idx, picked = run_search()
+    if idx >= 0 or not link.doc_no:
+        return idx, picked
+    for y in range(1, min(len(years), 4)):   # 문서번호는 지난해 문서일 수도 있다: 생산연도를 바꿔 가며 찾는다
+        try:
+            driver.execute_script("CreateYearCombo.SetCurSel(arguments[0]);", y)
+        except Exception:
+            break
+        log(f"  {link.doc_no}: 올해 대장에 없어 {years[y]}년 대장에서 찾습니다")
+        idx, picked = run_search()
+        if idx >= 0:
+            return idx, picked
+    return -1, ""
+
+
 def _hwp_mark_exists(driver, mark: str) -> bool | None:
     return driver.execute_script(_JS_BODY_HAS, mark)
 
@@ -993,7 +1167,7 @@ def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.by import By
 
-    wanted = " + ".join(link.title_has)
+    wanted = f"문서번호 {link.doc_no}" if link.doc_no else " + ".join(link.title_has)
 
     def restore(reason: str):
         driver.switch_to.window(draft)
@@ -1025,15 +1199,7 @@ def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
     _wait(driver, lambda d: d.execute_script(
         "return !!(window.DocumentList && document.getElementById('editSearchCondition') && window.search)"),
         20, "[문서링크] 창이 준비되지 않았습니다.")
-    driver.execute_script("document.getElementById('searchType').value = 'title';"
-                          "document.getElementById('editSearchCondition').value = arguments[0]; search(1, 1);",
-                          link.search)
-    time.sleep(2)                        # 검색 전 목록이 아니라 새 목록에서 고르도록
-    idx, picked, end = -1, "", time.time() + 15
-    while time.time() < end and idx < 0:
-        time.sleep(0.6)
-        idx, picked = driver.execute_script(_JS_PICK_ROW, list(link.title_has), list(link.exclude),
-                                            list(link.prefer), link.min_prefer)
+    idx, picked = _search_rows(driver, link, log)
     if idx < 0:
         driver.close()
         restore(f"[문서링크]에서 '{wanted}' 문서를 찾지 못했습니다.")
@@ -1045,6 +1211,9 @@ def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
         target = next((c for c in cells if picked and picked.strip() in (c.text or "")),
                       next((c for c in cells if all(w in (c.text or "") for w in link.title_has)),
                            cells[0] if cells else rows[idx]))
+        if link.doc_no:                  # 문서번호 칸을 누른다(제목이 같은 문서가 여럿이어도 정확히)
+            target = next((c for c in cells if (c.text or "").strip() == link.doc_no
+                           or (c.text or "").strip().endswith("-" + link.doc_no)), target)
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
         ActionChains(driver).move_to_element(target).click(target).perform()
     else:
@@ -1126,6 +1295,8 @@ class DocLink:
     exclude: tuple = ()         # 제목에 이 글자가 있으면 고르지 않는다
     prefer: tuple = ()          # 제목에 맞을수록 먼저 고르는 정규식(예: 차수, 월)
     min_prefer: int = 0         # prefer 중 최소 몇 개가 맞아야 고르는지
+    doc_no: str = ""            # 문서번호(등록번호, 예: '가나관리소-1234' 또는 '1234'). 있으면 번호로 찾는다
+    year: str = ""              # 문서번호의 생산연도(예: '2025'). 비우면 올해부터 3년 전까지 찾는다
 
 
 @dataclass
@@ -1137,6 +1308,7 @@ class DraftPart:
     upload_path: str = ""       # 수신자 엑셀(수기입력 [업로드])
     doc_links: list = field(default_factory=list)   # 본문에 넣을 관련 문서 링크(본문의 각 표식 자리)
     external_receiver: bool = False   # 수신자를 외부유통문서 트리에서 찾아 넣는다
+    fit_spacing: bool = False   # [올바른 문서 만들기]: 낱말이 끊긴 줄의 자간을 맞춘다
 
 
 TAB_LI = "#tabHead li"
@@ -1190,7 +1362,7 @@ def create_drafts(driver, parts: list[DraftPart], log=print, notify=None) -> lis
         docinfo = find_or_open_docinfo(driver, draft, log)
         _apply_docinfo(driver, docinfo, part, log, notify, subcase=i)
         time.sleep(2)   # 본문 문서가 서식에 반영될 시간
-        if not insert_body(driver, draft, part.body_html, log, subcase=i):
+        if not insert_body(driver, draft, part.body_html, log, subcase=i, fit_spacing=part.fit_spacing):
             todo.append(f"{name}본문: [브라우저로 미리보기]의 본문(표 포함)을 복사해 붙여 넣기")
         else:
             from selenium.common.exceptions import WebDriverException
@@ -1203,8 +1375,10 @@ def create_drafts(driver, parts: list[DraftPart], log=print, notify=None) -> lis
                     msg = str(ex) if isinstance(ex, DraftError) else str(ex).splitlines()[0][:80]
                     log(f"⚠️ 문서링크 자동 추가 실패: {msg}")
                     driver.switch_to.window(draft)
+                    how = (f"등록번호 '{link.doc_no}' 검색" if link.doc_no else
+                           f"'{link.search}' 검색 → '{' + '.join(link.title_has)}'")
                     todo.append(f"{name}문서링크: 본문의 '{link.fallback}'을 선택하고 [문서링크]에서 "
-                                f"'{link.search}' 검색 → '{' + '.join(link.title_has)}' 문서 [추가]")
+                                f"{how} 문서 [추가]")
     todo.append("붙임 파일이 있으면 [첨부]로 올리기")
     todo.append("내용을 확인한 뒤 [결재올림](상신)은 직접 누르기")
     return todo

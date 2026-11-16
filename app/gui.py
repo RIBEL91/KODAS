@@ -20,13 +20,14 @@ import doc_template as dtpl
 import homnet
 import homnet_draft
 import paths
+import proofread
 import roster
 import settings_store
 import ui_kit
 
-VERSION = "1.3.1"
-FONT = ("맑은 고딕", 10)
-FONT_B = ("맑은 고딕", 10, "bold")
+VERSION = "1.4.0"
+FONT = (ui_kit.FONT, 10)
+FONT_B = (ui_kit.FONT, 10, "bold")
 ACCENT = ui_kit.PRIMARY_D   # 새 디자인: 파랑 계열(진한 쪽)
 # 달력(DateEntry) 색: 앱의 파랑 계열. 주말은 붉은 글씨, 다른 달 날짜는 옅게
 CAL_STYLE = dict(
@@ -45,6 +46,9 @@ BROWN, SUB = ui_kit.TEXT, ui_kit.SUB   # 본문 글자, 설명 글자
 LINE = ui_kit.LINE          # 옅은 구분선
 SELECT_BG = ui_kit.PRIMARY_SOFT       # 목록에서 고른 줄
 LINK_KEYS = ("문서링크", "심사결과링크", "소명안내링크")   # 자동 작성 때 홈넷 [문서링크]로 채우는 칸
+# 문서번호(등록번호): '가나관리소-1234', '1234', 날짜를 붙이면 그 해 대장에서 '가나관리소-12(2025. 1. 2.)'
+DOC_NO_RE = re.compile(r"^((?:[^\s,()-]+-)?\d{1,7})\s*(?:\(\s*((?:19|20)\d{2})[^()]*\))?$")
+LINK_FIELD = "관련문서"     # 서식의 {관련문서} 자리(없으면 1안 본문 맨 위 '관련:' 줄)에 [문서링크]로 넣는 관련 문서
 TEXT_OPTS = dict(bg="white", relief="flat", borderwidth=0, highlightthickness=1,
                  highlightbackground="#e0e0e0", highlightcolor=ACCENT, padx=6, pady=4)
 INFO_FIELDS = [("단지명", "단지명", "예: 광주우산3 (관리소명·약칭은 자동)"),
@@ -54,6 +58,34 @@ INFO_FIELDS = [("단지명", "단지명", "예: 광주우산3 (관리소명·약
 RENT_TYPES = dtpl.RENT_TYPES
 
 
+def recolor_sv_ttk(root: tk.Tk, sv_dir: str, color: str) -> None:
+    """sv_ttk 밝은 테마의 파란 강조(단추·체크칸·입력칸 밑줄) 그림을 디자인 색으로 바꿔 다시 입힌다.
+    sv_ttk는 그림 한 장(spritesheet)을 잘라 쓰므로, 파란 점만 색상을 돌려 새 그림에서 다시 자른다."""
+    import colorsys
+    from PIL import Image
+    sheet = Image.open(os.path.join(sv_dir, "theme", "spritesheet_light.png")).convert("RGBA")
+    th, ts, tv = colorsys.rgb_to_hsv(*(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)))
+    px = sheet.load()
+    for y in range(sheet.height):
+        for x in range(sheet.width):
+            r, g, b, a = px[x, y]
+            if not a:
+                continue
+            h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            if s > 0.25 and 0.52 < h < 0.70:            # 파란 강조색(#005fb8 둘레)
+                nr, ng, nb = colorsys.hsv_to_rgb(th, min(1, s * ts), min(1, v * tv / 0.72))
+                px[x, y] = (round(nr * 255), round(ng * 255), round(nb * 255), a)
+    path = os.path.join(paths.user_dir(), "theme_sprites.png")
+    sheet.save(path)
+    root.tk.call("image", "create", "photo", "kodas_sheet", "-file", path)
+    info = root.tk.splitlist(root.tk.eval("set ::spriteinfo"))
+    imgs = dict(zip(*[iter(root.tk.splitlist(root.tk.eval("array get ttk::theme::sv_light::I")))] * 2))
+    for i in range(0, len(info), 5):
+        name, x, y, w, h = info[i], *map(int, info[i + 1:i + 5])
+        if name in imgs:
+            root.tk.call(imgs[name], "copy", "kodas_sheet", "-from", x, y, x + w, y + h)
+
+
 def apply_theme(root: tk.Tk) -> ttk.Style:
     """윈도11 느낌의 Sun Valley 밝은 테마. 없으면 기본 테마로 그냥 진행."""
     try:
@@ -61,8 +93,10 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
         sv_ttk.set_theme("light", root)
         from tkinter import font as tkfont
         for name in tkfont.names(root):
-            if name.startswith("SunValley"):
-                tkfont.nametofont(name, root).configure(family="맑은 고딕")
+            if name.startswith(("SunValley", "Tk")):
+                tkfont.nametofont(name, root).configure(family=ui_kit.FONT)
+        if ui_kit.DESIGN != ui_kit.DEFAULT_DESIGN:
+            recolor_sv_ttk(root, os.path.dirname(sv_ttk.__file__), ui_kit.PRIMARY)
     except Exception:
         pass
     style = ttk.Style(root)
@@ -107,8 +141,8 @@ def auto_date_rule(label: str, fields: dict):
     return None
 
 
-KEY_DATES = ("갱신월", "제출기한")      # 공문마다 꼭 확인할 날짜 칸(빨간 * 표시)
-ROUND_DATES = ("검색결과통보일",)   # 차수를 넣으면 홈넷 기록물등록대장에서 찾아 채우는 날짜(입력칸 없음)
+KEY_DATES = ("갱신월", "제출기한")      # 꼭 넣어야 하는 날짜(빨간 *)
+ROUND_DATES = ("검색결과통보일",)        # 차수로 홈넷에서 찾아 채우는 날짜
 AUTO_DATE_NOTES = {"안내문시행일": "작성일", "대상세대 갱신월": "검색월 13개월 전",
                    "재임대월": "갱신월 2개월 전"}   # 나머지는 갱신월 말일
 DATE_MONTH_AUTO = ("대상세대 갱신월", "재임대월")     # 달만 보이는 자동 날짜
@@ -163,12 +197,43 @@ class MonthEntry(ttk.Frame):
         self.month.set(str(d.month))
 
 
+class ChoiceBox(ttk.Frame):
+    """{선택:형별=36|46|51} 칸: 체크칸을 늘어놓고 고른 것을 '36, 51'처럼 돌려준다(입력칸처럼 get()을 쓴다)."""
+
+    def __init__(self, parent, options: list[str], suffix: str = "", command=None):
+        super().__init__(parent)
+        self.vars = []
+        for opt in options:
+            v = tk.BooleanVar(value=False)
+            ttk.Checkbutton(self, text=f"{opt}{suffix}", variable=v,
+                            command=command).pack(side="left", padx=(0, 10))
+            self.vars.append((opt, v))
+
+    def get(self) -> str:
+        return dtpl.CHOICE_SEP.join(o for o, v in self.vars if v.get())
+
+    def set(self, value: str) -> None:
+        picked = {x.strip() for x in str(value or "").split(",")}
+        for o, v in self.vars:
+            v.set(o in picked)
+
+
+MAX_COLLECT = 5000      # 대장 문서 받기: 한 번에 살펴볼 최대 문서 수
+
+
 class CollectDialog(tk.Toplevel):
     """대장 문서 받기 설정: 검색어 · 개수 · 받을 것(서식·PDF·첨부) · 꼭 가릴 이름·동호수·연락처."""
 
-    AREAS = ("임대", "시설", "주거복지", "주택관리")
+    AREAS = ("자동(편철)", "임대", "시설", "주거복지", "주택관리")
+    THIS_YEAR = "올해"
 
-    def __init__(self, master, area: str = "주택관리"):
+    @classmethod
+    def parse_year(cls, text: str) -> int | None:
+        """'2025년' → 2025, '올해' → None(홈넷 기본 = 올해, 미리 열어 둔 문서 창도 그대로 쓴다)."""
+        m = re.fullmatch(r"\s*(\d{4})\s*년?\s*", text or "")
+        return int(m.group(1)) if m else None
+
+    def __init__(self, master, area: str = "자동(편철)"):
         super().__init__(master)
         self.title("홈넷 대장 문서 받기")
         self.resizable(False, False)
@@ -184,15 +249,33 @@ class CollectDialog(tk.Toplevel):
         self.keyword = ttk.Entry(f, width=34)
         self.keyword.grid(row=1, column=1, sticky="w", pady=(10, 3))
         ttk.Label(f, text="살펴볼 문서 수").grid(row=2, column=0, sticky="e", padx=6, pady=3)
-        self.count = ttk.Spinbox(f, from_=1, to=500, width=8)
+        cf = ttk.Frame(f)
+        cf.grid(row=2, column=1, sticky="w")
+        self.count = ttk.Spinbox(cf, from_=1, to=MAX_COLLECT, width=8)
         self.count.set("30")
-        self.count.grid(row=2, column=1, sticky="w")
+        self.count.pack(side="left")
+        ttk.Label(cf, text="연도").pack(side="left", padx=(16, 6))
+        this_year = dt.date.today().year
+        self.year = ttk.Combobox(cf, width=10, state="readonly",
+                                 values=[self.THIS_YEAR] + [f"{y}년" for y in range(this_year - 1, 2005, -1)])
+        self.year.set(self.THIS_YEAR)
+        self.year.pack(side="left")
+        ttk.Label(cf, text="(그 해 기록물등록대장에서 받습니다)", foreground="#777").pack(side="left", padx=6)
+        ttk.Label(f, text="편철(선택)").grid(row=3, column=0, sticky="e", padx=6, pady=3)
+        bf = ttk.Frame(f)
+        bf.grid(row=3, column=1, sticky="w")
+        self.binders = ttk.Entry(bf, width=34)
+        self.binders.pack(side="left")
+        ttk.Label(bf, text="예: 교육훈련, 시설관리  (비우면 모든 편철)", foreground="#777").pack(side="left", padx=6)
+        self.dedupe = tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, text="비슷한 제목은 하나만 (예: '…급여 지급(2025.12월분)'·'(11월분)'처럼 날짜·월만 다른 문서)",
+                        variable=self.dedupe).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.internal = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="내부결재 문서만 (켜면 수신자가 있는 문서·접수 문서도 건너뜀)",
-                        variable=self.internal).grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
+                        variable=self.internal).grid(row=4, column=0, columnspan=2, sticky="w", pady=3)
 
         what = ttk.LabelFrame(f, text="받을 것", padding=(10, 4))
-        what.grid(row=4, column=0, columnspan=2, sticky="we", pady=(8, 4))
+        what.grid(row=5, column=0, columnspan=2, sticky="we", pady=(8, 4))
         self.pdf = tk.BooleanVar(value=True)
         ttk.Checkbutton(what, text="문서를 PDF 파일로 받기 — 이름·동호수·연락처는 000으로 가림",
                         variable=self.pdf).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
@@ -204,11 +287,15 @@ class CollectDialog(tk.Toplevel):
                         variable=self.register).grid(row=2, column=0, sticky="w", pady=2)
         ttk.Label(what, text="분야").grid(row=2, column=1, sticky="e", padx=(10, 4))
         self.area = ttk.Combobox(what, values=self.AREAS, width=9, state="readonly")
-        self.area.set(area if area in self.AREAS else "주택관리")
+        self.area.configure(width=11)
+        self.area.set("자동(편철)")      # 기본: 문서마다 편철로 분야를 정하고 편철 묶음에 넣는다
         self.area.grid(row=2, column=2, sticky="w")
+        ttk.Label(what, foreground="#777", text=(
+            "자동(편철): 문서정보의 편철(예: 교육훈련관계철)로 분야를 정해 '편철 · 교육훈련관계철' 묶음에 넣고,\n"
+            "받은 폴더에 편철별 폴더·편철별_목록.csv를 만듭니다.")).grid(row=3, column=0, columnspan=3, sticky="w")
 
         hide = ttk.LabelFrame(f, text="꼭 가릴 글자 (선택 — 자동으로 못 찾는 것, 쉼표로 여러 개)", padding=(10, 4))
-        hide.grid(row=5, column=0, columnspan=2, sticky="we", pady=4)
+        hide.grid(row=6, column=0, columnspan=2, sticky="we", pady=4)
         self.hide = {}
         for i, (key, hint) in enumerate((("이름", "예: 홍길동, 김영희"), ("동호수", "예: 105동 814호"),
                                          ("연락처", "예: 010-1234-5678"))):
@@ -219,11 +306,12 @@ class CollectDialog(tk.Toplevel):
             self.hide[key] = e
         ttk.Label(f, foreground="#777", justify="left", text=(
             "관리소 대표번호(기본정보의 전화번호)는 가리지 않습니다. 스캔(그림)만 있는 PDF는 글자를 찾을 수 없어\n"
-            "가리지 못하니 완료 창의 목록을 보고 직접 확인해 주세요.")).grid(row=6, column=0, columnspan=2, sticky="w")
+            "가리지 못하니 완료 창의 목록을 보고 직접 확인해 주세요.")).grid(row=7, column=0, columnspan=2, sticky="w")
         b = ttk.Frame(f)
-        b.grid(row=7, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        b.grid(row=10, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(b, text="취소", command=self.destroy).pack(side="right")
         ttk.Button(b, text="받기 시작", style="Accent.TButton", command=self._ok).pack(side="right", padx=6)
+        ttk.Button(b, text="📚 고른 연도 전체 받기", command=self._ok_all).pack(side="right", padx=6)
         self.keyword.focus_set()
         self.bind("<Return>", lambda _e: self._ok())
         self.bind("<Escape>", lambda _e: self.destroy())
@@ -234,9 +322,21 @@ class CollectDialog(tk.Toplevel):
         """'홍길동, 김영희 / 105동 814호' → ['홍길동', '김영희', '105동 814호']"""
         return [w.strip() for w in re.split(r"[,，/;\n]+", text or "") if w.strip()]
 
-    def _ok(self):
+    def _ok_all(self):
+        """고른 연도(올해면 올해) 대장의 문서를 처음부터 끝까지(최대 MAX_COLLECT개) 받는다."""
+        year = self.parse_year(self.year.get()) or dt.date.today().year
+        if not messagebox.askyesno(
+                "연도 전체 받기",
+                f"{year}년 기록물등록대장의 문서를 처음부터 끝까지 모두 받습니다(최대 {MAX_COLLECT:,}개).\n\n"
+                "문서 하나에 5초쯤 걸려 1,000개면 1시간 30분쯤 걸립니다.\n"
+                "도중에 [■ 그만 받기]를 누르면 그때까지 받은 문서만 정리합니다.\n\n"
+                "제목 검색어·편철·체크한 조건은 그대로 적용됩니다. 시작할까요?", parent=self):
+            return
+        self._ok(count=MAX_COLLECT, year=year)
+
+    def _ok(self, count: int | None = None, year: int | None = None):
         try:
-            n = max(1, min(500, int(self.count.get())))
+            n = count or max(1, min(MAX_COLLECT, int(self.count.get())))
         except ValueError:
             messagebox.showwarning("문서 수", "살펴볼 문서 수를 숫자로 넣어 주세요.", parent=self)
             return
@@ -246,7 +346,9 @@ class CollectDialog(tk.Toplevel):
         extra = [w for e in self.hide.values() for w in self.split_words(e.get())]
         self.result = {"keyword": self.keyword.get().strip(), "count": n, "area": self.area.get(),
                        "only_internal": self.internal.get(), "register": self.register.get(),
-                       "pdf": self.pdf.get(), "attachments": self.attach.get(), "extra": extra}
+                       "pdf": self.pdf.get(), "attachments": self.attach.get(), "extra": extra,
+                       "binders": self.split_words(self.binders.get()),
+                       "year": year or self.parse_year(self.year.get()), "dedupe": self.dedupe.get()}
         self.destroy()
 
 
@@ -262,7 +364,6 @@ class App:
         self.current: dtpl.Template | None = None
         self.date_widgets: dict[str, object] = {}
         self.edit_mode = False
-        # 예전 '엑셀 명단 불러오기'의 마지막 폴더. 수신자 엑셀을 고를 때 처음 열 폴더로만 쓴다
         self.roster_path = self.cfg.get("roster_path", "")
         self.upload_path = ""      # 홈넷 수신자 [업로드]에 올릴 엑셀 (저장하지 않음 — 잘못 보내지 않도록)
         self.upload_count: int | None = None   # 그 엑셀의 수신자 수 → 서식의 {세대수}
@@ -302,7 +403,7 @@ class App:
         style.configure("Treeview", font=FONT, rowheight=int(26 * k), foreground=BROWN)
         style.map("Treeview", background=[("selected", SELECT_BG)], foreground=[("selected", BROWN)])
         style.configure("Accent.TButton", font=FONT_B, padding=(14, 6))
-        style.configure("Big.Accent.TButton", font=("맑은 고딕", 11, "bold"), padding=(18, 8))
+        style.configure("Big.Accent.TButton", font=(ui_kit.FONT, 11, "bold"), padding=(18, 8))
         style.configure("Warn.TLabel", foreground="#b45309")
 
         self._build_menu()
@@ -322,8 +423,7 @@ class App:
         self.nb.pack(fill="both", expand=True, padx=12, pady=(10, 4))
         self._build_tab_account()
         self._build_tab_write()
-        # 환경 설정: 메뉴 자리는 남겨 두고 내용은 모두 단지기본정보로 옮겼다(빈 화면)
-        self.nb.add(ttk.Frame(self.nb), text="  환경 설정  ")
+        self._build_tab_design()        # 환경 설정: 디자인(색·글씨체) 고르기
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._drain)
         self._load_templates()
@@ -454,6 +554,12 @@ class App:
         self._cover(self.info_screen)
         self.info_screen.show(self.templates[i].label if 0 <= i < len(self.templates) else "", info)
 
+    def _open_write(self):
+        self.info_screen.place_forget()
+        self.nb.select(1)
+        self._nav("write")
+        self._refresh()
+
     def _info_done(self, values: dict):
         """기본정보 화면의 [시작하기]: ① 탭 입력칸에 옮기고 저장한 뒤 공문 작성 화면으로."""
         for key, e in list(self.info_entries.items()) + [("homnet_id", self.homnet_id), ("homnet_pw", self.homnet_pw)]:
@@ -463,10 +569,9 @@ class App:
             e.delete(0, "end")
             e.insert(0, values.get(key, ""))
         self._save_settings()
-        self.info_screen.place_forget()
-        self.nb.select(1)
-        self._nav("write")
-        self._refresh()
+        if not self.remember.get():
+            self.log("⚠️ '계정 기억하기'가 꺼져 있어 홈넷 계정은 저장하지 않았습니다(다음 실행 때 다시 묻습니다).")
+        self._open_write()
 
     def _pick_from_home(self, i: int):
         """처음 화면 검색 결과에서 고른 서식: 그 분야로 옮겨 바로 연다(분야·서식 고르기 화면을 건너뜀)."""
@@ -534,7 +639,7 @@ class App:
             self._text_button(right, text, cmd, bg=bg).pack(side="left", padx=(12, 0))
         mid = tk.Frame(head, bg=bg)
         mid.pack(side="left", padx=6, pady=6)
-        self.header_title = tk.Label(mid, text="공문 작성", font=("맑은 고딕", 16, "bold"), bg=bg, fg=BROWN)
+        self.header_title = tk.Label(mid, text="공문 작성", font=(ui_kit.FONT, 16, "bold"), bg=bg, fg=BROWN)
         self.header_title.pack(anchor="w")
 
     @staticmethod
@@ -550,7 +655,7 @@ class App:
     def _orange_button(parent, text, command, big=False):
         """기본정보 화면의 [시작하기]와 같은 파란 단추(예전 이름 그대로)."""
         b = tk.Label(parent, text=text, bg=ORANGE, fg="white", cursor="hand2",
-                     font=("맑은 고딕", 11 if big else 10, "bold"), padx=24 if big else 16, pady=9 if big else 5)
+                     font=(ui_kit.FONT, 11 if big else 10, "bold"), padx=24 if big else 16, pady=9 if big else 5)
         b.bind("<Button-1>", lambda _e: command())
         b.bind("<Enter>", lambda _e: b.config(bg=ACCENT))
         b.bind("<Leave>", lambda _e: b.config(bg=ORANGE))
@@ -564,7 +669,7 @@ class App:
         self._nav("complex")
 
     def _show_settings(self):
-        """환경 설정: 내용은 모두 단지기본정보로 옮겨 빈 화면만 남았다."""
+        """환경 설정: 공문작성기 디자인(색 묶음 5가지 · 글씨체)을 고른다."""
         self._hide_overlays()
         self.nb.select(2)
         self.header_title.config(text="환경 설정")
@@ -584,7 +689,7 @@ class App:
     def _build_log(self):
         f = ttk.LabelFrame(self.main, text="진행 상황")
         f.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
-        self.log_box = scrolledtext.ScrolledText(f, height=5, wrap="word", font=("맑은 고딕", 9),
+        self.log_box = scrolledtext.ScrolledText(f, height=5, wrap="word", font=(ui_kit.FONT, 9),
                                                  state="disabled", **TEXT_OPTS)
         self.log_box.pack(fill="both", expand=True, padx=4, pady=4)
         self.progress = ttk.Progressbar(f, mode="indeterminate")
@@ -861,6 +966,7 @@ class App:
                   "complex_info": self.cfg.get("complex_info", {}),
                   "window": self.cfg.get("window", ""),
                   "renewal_months": self.cfg.get("renewal_months", {}),
+                  "design": self.cfg.get("design", {}),
                   **self._info_values()}
         try:
             settings_store.save(values, self.remember.get())
@@ -884,8 +990,7 @@ class App:
         pane = ttk.PanedWindow(tab, orient="horizontal")
         pane.pack(fill="both", expand=True, padx=6, pady=6)
 
-        # 서식 목록: 화면에는 보이지 않는다(서식은 왼쪽 메뉴 [서식 고르기] 화면에서 고른다).
-        # 고른 서식을 여는 일(_on_select)은 이 목록이 맡으므로 만들어만 둔다.
+        # 서식 목록: 화면에는 띄우지 않는다(서식은 왼쪽 메뉴 [서식 고르기]에서 고른다). 고른 서식 표시용으로만 둔다
         left = ttk.Frame(tab)
         sf = ttk.Frame(left)
         sf.pack(fill="x", padx=6, pady=(6, 2))
@@ -920,7 +1025,7 @@ class App:
 
         def fit(_e=None):
             need = self.inputs.winfo_reqheight()
-            # 본문을 닫아 두면 입력칸이 더 길게 보여도 된다
+            # 본문을 펼쳐 고칠 때는 입력칸을 줄이고, 평소에는 입력칸을 넓게 쓴다
             limit = max(int(180 * self.k), int(right.winfo_height() * (0.55 if self.edit_mode else 0.8)))
             cv.configure(height=min(need, limit), scrollregion=(0, 0, 0, need))
             cv.itemconfigure(win, width=cv.winfo_width())
@@ -956,13 +1061,16 @@ class App:
         bar.pack(fill="x", padx=6, pady=2)
         self.mode_btn = ttk.Button(bar, text="✏ 본문 직접 고치기", command=self._toggle_edit)
         self.mode_btn.pack(side="left")
+        self.proof_on = False         # [올바른 문서 만들기]를 누른 뒤에는 넣은 값까지 규칙대로 맞춰 고친다
+        self.proof_btn = ttk.Button(bar, text="✔ 올바른 문서 만들기", command=self._proofread)
+        self.proof_btn.pack(side="left", padx=(6, 0))
         self.save_btn = ttk.Button(bar, text="고친 내용을 서식에 저장", command=self._save_template)
         self.mode_hint = ttk.Label(bar, foreground="#555", text="")
         self.mode_hint.pack(side="left", padx=8)
-        # 본문은 [✏ 본문 직접 고치기]를 눌렀을 때만 펼친다(_toggle_edit)
-        self.preview = scrolledtext.ScrolledText(pv, wrap="word", font=("맑은 고딕", 10), **TEXT_OPTS)
+        # 본문은 [✏ 본문 직접 고치기]를 눌렀을 때만 펼친다
+        self.preview = scrolledtext.ScrolledText(pv, wrap="word", font=(ui_kit.FONT, 10), **TEXT_OPTS)
         self.preview.tag_configure("blank", foreground="#c62828", background="#fde8e8")
-        self.preview.tag_configure("field", foreground=ACCENT, font=("맑은 고딕", 10, "bold"))
+        self.preview.tag_configure("field", foreground=ACCENT, font=(ui_kit.FONT, 10, "bold"))
         self.preview.tag_configure("table", background="#f1f5fb", foreground="#333")
         self.preview.tag_raise("blank")
         self.warn_var = tk.StringVar()
@@ -1032,6 +1140,7 @@ class App:
         if self.edit_mode:
             self._toggle_edit()
         self.current = t
+        self.proof_on = False
         self._set_write_title()
         self._build_inputs()
         self._refresh()
@@ -1202,8 +1311,7 @@ class App:
         docs = self._docs()
         uses = lambda key: any(d.uses(key) for d in docs)   # noqa: E731
         sender = next((d for d in docs if not d.internal), t)
-        # 받는 분이 있는 안마다 수신자 엑셀을 골랐으면 수신자는 엑셀이 정하므로 이름·동호 칸을 숨긴다
-        # (내부결재 안에 이름·동호가 들어가면 그대로 둔다)
+        # 받는 분에게 보내는 안이 모두 수신자 엑셀로 가면 이름·동호 칸은 필요 없다(엑셀의 수신자에게 간다)
         person = lambda d: d.uses("이름") or d.uses("주소")   # noqa: E731
         to_people = [d for d in docs if not d.internal and person(d)]
         by_excel = (bool(to_people) and all(self._upload_for(d) for d in to_people)
@@ -1248,7 +1356,7 @@ class App:
             fields += [fs for fs in d.date_fields() if fs[0] not in dict(fields)]
         # 자동으로 정하는 날짜는 입력칸을 만들지 않는다(만료일=갱신월 말일, 안내문시행일=작성일)
         self.auto_dates = [lb for lb, _ in fields if auto_date_rule(lb, dict(fields))]
-        # 차수가 있는 서식의 검색결과통보일도 칸을 만들지 않는다: 차수의 결과 통보 문서 시행일로 채운다
+        # 차수가 있는 서식의 결과 통보일은 차수로 홈넷에서 찾아 채운다(입력칸 없음)
         has_round = any("차수" in d.input_fields() for d in docs)
         self.found_labels = [lb for lb, _ in fields if lb in ROUND_DATES and has_round]
         if not keep:
@@ -1256,7 +1364,7 @@ class App:
         fields = [fs for fs in fields if fs[0] not in self.auto_dates + self.found_labels]
         for i, (label, style) in enumerate(fields):
             rr, cc = r + i // 2, (i % 2) * 3
-            if label in KEY_DATES:    # 꼭 확인할 날짜: 처음 값이 들어 있어 비지 않으므로 늘 빨간 * 로 보인다
+            if label in KEY_DATES:
                 ttk.Label(f, text="* " + label, font=FONT_B, foreground="#c62828").grid(
                     row=rr, column=cc, sticky="e", padx=8, pady=4)
             else:
@@ -1293,11 +1401,22 @@ class App:
         if tip:
             self._help(tip)
         # 수기 입력 칸은 한 줄에 하나씩(이름 칸 아래 같은 열) — 버튼·안내가 옆 칸을 밀지 않게
+        options = {k: v for d in reversed(docs) for k, v in d.input_options().items()}
         for label in inputs:
             lb = ttk.Label(f, text="* " + label, font=FONT_B)
             lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
             box = ttk.Frame(f)
             box.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
+            if kinds.get(label) == "선택":     # 체크해서 고르는 칸(예: 형별 36·46·51형)
+                e = ChoiceBox(box, options.get(label, []), "형" if label == "형별" else "",
+                              command=self._refresh)
+                e.set(old_values.get("입력:" + label, ""))
+                e.pack(side="left")
+                self.required.append((lb, e))
+                self.text_widgets[label] = e
+                self._help(f"{label}: 해당하는 것을 모두 체크합니다. 제목과 표에 고른 것이 들어갑니다.")
+                r += 1
+                continue
             is_date = label.endswith("일") and kinds.get(label) not in ("금액", "숫자")
             if is_date:     # 날짜 칸: ▼를 누르면 달력. '2026. 10. 8.' 꼴로 들어가고 직접 적어도 된다
                 e = DateEntry(box, width=14, date_pattern="y. m. d.", **CAL_STYLE)
@@ -1330,6 +1449,18 @@ class App:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
             self.auto_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
             r += 1
+        # 관련 문서: 제목 일부를 적으면 자동 작성 때 홈넷 [문서링크]로 그 문서를 본문에 넣는다
+        ttk.Label(f, text="🔗 관련 문서번호").grid(row=r, column=0, sticky="e", padx=8, pady=4)
+        lbox = ttk.Frame(f)
+        lbox.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
+        self.link_entry = ttk.Entry(lbox, width=34)
+        self.link_entry.insert(0, old_values.get(LINK_FIELD + "_검색어", ""))
+        self.link_entry.pack(side="left")
+        self.link_entry.bind("<KeyRelease>", lambda _e: self._refresh())
+        ttk.Label(lbox, foreground="#777", text="예: 광주우산3관리소-1234 또는 1234 (여러 개는 쉼표) — "
+                                                "자동 작성 때 그 번호의 문서를 [문서링크]로 넣습니다"
+                  ).pack(side="left", padx=8)
+        r += 1
         # 선택안이 있으면 안마다 위에서 고르고, 외부유통문서에서 찾는 서식은 엑셀을 쓰지 않는다
         if not sender.internal and not t.options and not sender.external_receiver:
             self._build_upload_row(f, r)
@@ -1370,8 +1501,11 @@ class App:
         import dataclasses
         specs = {k: v for k, v in self._link_specs(dates).items() if d.uses(k)}
         order = sorted(specs, key=lambda k: d.body.find("{" + k + "}"))
-        return [dataclasses.replace(specs[k], mark=homnet_draft.LINK_MARK.replace("⟧", f"{i}⟧"))
-                for i, k in enumerate(order, 1)]
+        links = [specs[k] for k in order]
+        if "{" + LINK_FIELD + "}" in self._link_body(d):      # [🔗 관련 문서]에 적은 문서들
+            links += [self._user_link(w) for w in self._link_words()]
+        return [dataclasses.replace(x, mark=homnet_draft.LINK_MARK.replace("⟧", f"{i}⟧"))
+                for i, x in enumerate(links, 1)]
 
     # ---------- 차수 → 기록물등록대장 조회 ----------
     def _lookup_round(self, then=None):
@@ -1417,7 +1551,7 @@ class App:
             if n.enforce_date:
                 fill["검색결과통보일"] = n.enforce_date     # 결과 통보 시행일
             self.log(f"  {n.title} — {n.doc_number}({dtpl.fmt_date(n.enforce_date, '일')})")
-            # 입력칸이 없는 날짜(검색결과통보일)는 이 차수 값으로 기억해 둔다
+            # 입력칸 없이 찾아 넣는 날짜(결과 통보일): 어느 차수로 찾았는지와 함께 둔다
             self.found = (raw, {lb: v for lb, v in fill.items() if lb in self.found_labels})
             for label, value in fill.items():
                 e = self.text_widgets.get(label)
@@ -1515,12 +1649,51 @@ class App:
             v = auto_date_rule(label, dates)(dates, dt.date.today())
             if v:
                 dates[label] = v
+        # 차수로 찾아 둔 결과 통보일: 지금 차수와 같을 때만 쓴다
         found_round, found = getattr(self, "found", ("", {}))
-        if found_round and found_round == self._round():     # 차수를 바꾸면 예전 차수 날짜는 쓰지 않는다
+        if found_round and found_round == self._round():
             dates.update({k: v for k, v in found.items() if k in getattr(self, "found_labels", [])})
         for key, link in self._link_specs(dates).items():
             values[key] = link.fallback
+        words = self._link_words()
+        values[LINK_FIELD + "_검색어"] = ", ".join(words)
+        values[LINK_FIELD] = ", ".join(self._user_link_text(w) for w in words)
         return values, dates
+
+    def _link_words(self) -> list[str]:
+        """[🔗 관련 문서] 칸의 검색어들(쉼표로 나눔)."""
+        e = getattr(self, "link_entry", None)
+        try:
+            raw = e.get() if e is not None and e.winfo_exists() else ""
+        except tk.TclError:
+            raw = ""
+        return [w.strip() for w in re.split(r"[,，]+", raw) if w.strip()]
+
+    @staticmethod
+    def _user_link_text(word: str) -> str:
+        return f"[문서링크: {word}]"
+
+    @classmethod
+    def _user_link(cls, word: str) -> homnet_draft.DocLink:
+        """[🔗 관련 문서번호]에 적은 말 → 문서링크. 문서번호(…-1234, 1234)면 등록번호로 정확히 찾고,
+        번호가 아니면(예전처럼) 문서 제목 일부로 찾는다."""
+        m = DOC_NO_RE.match(word)
+        if m:
+            return homnet_draft.DocLink(m.group(1), (m.group(1),), cls._user_link_text(word), doc_no=m.group(1),
+                                        year=m.group(2) or "")
+        return homnet_draft.DocLink(word, (word,), cls._user_link_text(word))
+
+    def _link_target(self) -> dtpl.Template | None:
+        """서식에 {관련문서} 자리가 없을 때 관련 문서 줄을 넣을 안(1안)."""
+        docs = self._docs()
+        return docs[0] if docs else None
+
+    def _link_body(self, t: dtpl.Template) -> str:
+        """관련 문서를 적었고 서식에 {관련문서} 자리가 없으면 1안 본문 맨 위에 '관련:' 줄을 넣는다."""
+        if (self._link_words() and "{" + LINK_FIELD + "}" not in t.body
+                and not any(d.uses(LINK_FIELD) for d in self._docs()) and t is self._link_target()):
+            return "관련: {" + LINK_FIELD + "}\n" + t.body
+        return t.body
 
     def _filled(self, doc: dtpl.Template | None = None) -> tuple[str, str, str]:
         """(제목, 수신자, 본문 텍스트). doc을 주지 않으면 1안(고른 서식)."""
@@ -1537,7 +1710,63 @@ class App:
             receiver = "⚠ 이 안의 수신자 엑셀을 골라 주세요"
         else:
             receiver = dtpl.fill_receiver(t.receiver, values)
-        return title, receiver, dtpl.fill(t.body, values, dates, t.extras)
+        body = dtpl.fill(self._link_body(t), values, dates, t.extras)
+        if getattr(self, "proof_on", False):     # [올바른 문서 만들기]: 넣은 날짜·금액 등도 규칙대로
+            title, body = proofread.fix_title(title)[0], proofread.fix(body)[0]
+        return title, receiver, body
+
+    def _proofread(self):
+        """[올바른 문서 만들기]: 공문서 작성 규칙(날짜·시간·금액 표기, 항목 기호, 붙임, 끝 표시, 행정용어)에
+        맞지 않는 곳을 찾아 고친다. 서식 본문도 고치고, 이후 넣는 값도 자동으로 맞춘다."""
+        if self.current is None:
+            return
+        if self.edit_mode:                   # 본문을 직접 고치는 중이면 그 글을 고친다
+            text = self.preview.get("1.0", "end").rstrip("\n")
+            new, changes = proofread.fix(text)
+            if changes:
+                self.preview.delete("1.0", "end")
+                self.preview.insert("1.0", new)
+                self._tag_fields()
+        else:
+            changes = []
+            for t, _r, b in self._all_filled():      # 지금 보이는 글(값을 넣은 본문) 기준으로 알려 준다
+                changes += proofread.fix_title(t)[1] + proofread.fix(b)[1]
+            touched = False
+            for d in self._docs():                    # 서식 본문도 고쳐 둔다([고친 내용을 서식에 저장]으로 남길 수 있게)
+                nb, c1 = proofread.fix(d.body)
+                nt, c2 = proofread.fix_title(d.title)
+                if c1 or c2:
+                    d.body, d.title, touched = nb, nt, True
+            self.proof_on = True
+            self._refresh()
+            if touched:
+                self.save_btn.pack(side="left", padx=6, after=self.proof_btn)
+        if changes:
+            self.log(f"✔ 올바른 문서 만들기: {len(changes)}곳을 고쳤습니다.")
+            self.mode_hint.config(text=f"✔ 공문서 규칙대로 {len(changes)}곳을 고쳤습니다.")
+            messagebox.showinfo("올바른 문서 만들기", f"틀린 곳 {len(changes)}곳을 고쳤습니다.\n\n"
+                                + proofread.summary(changes)
+                                + ("" if self.edit_mode else
+                                   "\n\n이 문서는 이제 이름·날짜를 바꿔 넣어도 같은 규칙으로 맞춰 줍니다.\n"
+                                   "홈넷에 작성할 때 낱말이 줄 끝에서 끊기면 자간을 조절해 한 줄에 맞춥니다.\n"
+                                   "다음에도 이대로 쓰려면 [고친 내용을 서식에 저장]을 누르세요."))
+        else:
+            self.mode_hint.config(text="✔ 공문서 규칙에 맞습니다.")
+            messagebox.showinfo("올바른 문서 만들기", "✅ 고칠 곳이 없습니다. 공문서 작성 규칙에 맞습니다.\n\n"
+                                "(날짜·시간·금액 표기, 항목 기호 순서, 붙임, '끝.' 표시, 행정용어를 살폈습니다)\n\n"
+                                "홈넷에 작성할 때 낱말이 줄 끝에서 끊기면 자간을 조절해 한 줄에 맞춥니다.")
+
+    def _tag_fields(self):
+        """본문 직접 고치기 화면에서 {이름}·{날짜:…} 빈칸을 파란색으로."""
+        start = "1.0"
+        while True:
+            pos = self.preview.search(r"\{[^{}]+\}", start, stopindex="end", regexp=True,
+                                      count=(cnt := tk.IntVar()))
+            if not pos:
+                break
+            end = f"{pos}+{cnt.get()}c"
+            self.preview.tag_add("field", pos, end)
+            start = end
 
     def _all_filled(self) -> list[tuple[str, str, str]]:
         """작성할 안마다 (제목, 수신자, 본문)."""
@@ -1546,8 +1775,9 @@ class App:
     def _mark_required(self):
         """꼭 넣어야 하는 칸: 비어 있으면 이름표를 빨갛게, 채우면 원래 색으로."""
         for lb, e in getattr(self, "required", []):
-            if lb.winfo_exists():
-                lb.config(foreground="#c62828" if not e.get().strip() else BROWN)
+            if not lb.winfo_exists():
+                continue
+            lb.config(foreground="#c62828" if not e.get().strip() else BROWN)
 
     def _refresh(self):
         if self.current is None:
@@ -1607,6 +1837,7 @@ class App:
         t = self.current
         if not self.edit_mode:
             self.edit_mode = True
+            # 본문을 펼친다(평소에는 접어 두고 제목·수신자·빈칸 안내만 보인다)
             self.preview_box.pack_configure(fill="both", expand=True)
             self.preview.pack(fill="both", expand=True, padx=6, pady=4, before=self.warn_label)
             self._fit_inputs()
@@ -1712,8 +1943,8 @@ class App:
             messagebox.showwarning("계정 필요", "단지기본정보에서 홈넷 아이디와 비밀번호를 넣어 주세요.")
             self._show_complex()
             return
+        # 차수로 찾는 결과 통보일을 아직 못 찾았으면 먼저 찾는다
         if self.found_labels and self.found[0] != self._round():
-            # 검색결과통보일은 차수의 결과 통보 문서에서 가져오므로 먼저 찾는다
             if not self._round():
                 messagebox.showwarning("차수 필요", "차수를 숫자로 넣어 주세요. 예: 34")
                 self.text_widgets["차수"].focus_set()
@@ -1729,7 +1960,8 @@ class App:
                 for link in links:      # 관련 문서번호 자리는 홈넷 [문서링크]로 넣는다
                     b = b.replace(link.fallback, link.mark, 1)
                 parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b, hwp=True), up,
-                                                    doc_links=links, external_receiver=d.external_receiver))
+                                                    doc_links=links, external_receiver=d.external_receiver,
+                                                    fit_spacing=getattr(self, "proof_on", False)))
         except ValueError as ex:
             messagebox.showwarning("확인", str(ex))
             return
@@ -1854,7 +2086,7 @@ class App:
             else:
                 collector.mark_finished(prev_dir)
         if not resume:
-            dlg = CollectDialog(self.root, self.area)
+            dlg = CollectDialog(self.root)
             self.root.wait_window(dlg)
             opt = dlg.result
             if not opt:
@@ -1886,7 +2118,8 @@ class App:
                                     only_internal=opt["only_internal"], password=hpw,
                                     keyword=opt["keyword"], auto_open=True, pdf=opt["pdf"],
                                     attachments=opt["attachments"], extra=opt["extra"], keep_phones=keep_phones,
-                                    stop=stop, resume=resume, settings=opt)
+                                    stop=stop, resume=resume, settings=opt, binders=opt.get("binders", ()), year=opt.get("year"),
+                                    dedupe=opt.get("dedupe", True))
             res["made"] = []
             if opt["register"] and res["names"]:
                 st = collector.load_progress(out)               # 이어 받기: 앞서 서식으로 넣은 문서는 빼고
@@ -1907,8 +2140,11 @@ class App:
                      f" · 서식 {len(made)}개 ({res['dir']})")
             if made:
                 self._load_templates()
-                self._set_area(opt["area"])
-                self.picker.opened |= {"수집한 서식", "수집한 서식(수신자 있음)"}   # 받은 묶음을 펼쳐 보여 준다
+                done = {os.path.normcase(os.path.abspath(p)) for p in made}
+                mine = [t for t in self.templates if os.path.normcase(os.path.abspath(t.path)) in done]
+                areas = [t.area for t in mine]
+                self._set_area(max(set(areas), key=areas.count) if areas else opt["area"])
+                self.picker.opened |= {"수집한 서식", "수집한 서식(수신자 있음)"} | {t.bundle for t in mine}
                 self._show_picker()
             head = []
             if res.get("error"):
@@ -1937,8 +2173,19 @@ class App:
                 if att.get("other"):
                     lines.append("  ⚠ PDF가 아니라 가리지 않은 파일(한글·엑셀 등): " + ", ".join(att["other"][:5])
                                  + (" …" if len(att["other"]) > 5 else ""))
+            if res.get("off_binder"):
+                lines.append(f"  - 고른 편철이 아니라 건너뜀: {res['off_binder']}개")
+            if res.get("similar"):
+                lines.append(f"  - 비슷한 제목(날짜·월만 다름)이라 건너뜀: {res['similar']}개")
+            if res.get("unlocked"):
+                lines.append(f"  - 보안 문서 {res['unlocked']}개는 비밀번호로 열고 인적사항을 OOO으로 바꿔 저장")
+            if res.get("by_binder"):
+                lines.append("  - 편철별: " + ", ".join(f"{b} {len(v)}건" for b, v in sorted(res["by_binder"].items()))
+                             + "\n    (받은 폴더의 '편철별' 폴더 · 편철별_목록.csv)")
             if made:
-                lines.append(f"\n서식 {len(made)}개를 [{opt['area']}] 분야 '기타 공문 → 수집한 서식' 묶음에 넣었습니다.\n"
+                where = (f"[{opt['area']}] 분야" if opt["area"] in CollectDialog.AREAS[1:]
+                         else "편철에 맞는 분야(임대·시설·주거복지·주택관리)")
+                lines.append(f"\n서식 {len(made)}개를 {where}의 '기타 공문 → 편철 · (편철 이름)' 묶음에 넣었습니다.\n"
                              "이름·동호수·연락처는 공문 쓸 때 넣는 칸이 되었고, 그 밖의 사람 이름은 000으로 바꿨습니다.\n"
                              "문장 속 개인정보가 남아 있을 수 있으니 쓰기 전에 한 번 훑어봐 주세요.")
             lines.append(f"\n받은 폴더: {res['dir']}")
@@ -2013,6 +2260,10 @@ class App:
             "     날짜 칸 ▼를 누르면 달력이 나옵니다.\n"
             "     여러 명에게 보낼 때는 [📎 업로드할 엑셀 고르기]로 수신자 엑셀을 고릅니다.\n"
             "  3. 아래 확인하기에서 제목·수신자를 봅니다. 본문은 [✏ 본문 직접 고치기]를 누르면 열립니다.\n"
+            "     [✔ 올바른 문서 만들기]를 누르면 날짜·시간·금액 표기, 항목 번호, 붙임, '끝.' 표시, 행정용어를\n"
+            "     공문서 규칙대로 고쳐 줍니다.\n"
+            "     [🔗 관련 문서번호]에 문서번호(예: 가나관리소-1234, 지난해 문서는 가나관리소-12(2025. 1. 2.))를\n"
+            "     적으면 그 문서를 [문서링크]로 본문에 넣습니다.\n"
             "  4. [홈넷에 자동 작성]을 누르면 브라우저가 열리고\n"
             "     전자결재 → 문서작성 → 표준기안문에 제목·수신자·본문을 넣습니다.\n"
             "  5. 브라우저에서 내용을 확인하고 [결재올림]은 직접 누릅니다.\n\n"
@@ -2040,7 +2291,7 @@ class App:
         win.title("도움말")
         win.transient(self.root)
         win.configure(bg="white")
-        tk.Label(win, text=f"ⓘ  {t.label}", font=("맑은 고딕", 12, "bold"), bg="white", fg=BROWN,
+        tk.Label(win, text=f"ⓘ  {t.label}", font=(ui_kit.FONT, 12, "bold"), bg="white", fg=BROWN,
                  anchor="w", justify="left", wraplength=int(560 * self.k)).pack(fill="x", padx=18, pady=(14, 6))
         txt = tk.Text(win, wrap="word", font=FONT, bg="white", relief="flat", bd=0,
                       width=70, height=1, padx=4, spacing1=3, spacing3=3)
@@ -2077,11 +2328,14 @@ class App:
             "  구분: 목록에서 묶을 이름\n  ---   ← 이 줄 아래가 본문\n\n"
             "빈칸\n"
             "  {이름} {주소} — 공문마다 입력\n"
+            "  {관련문서} — [🔗 관련 문서번호]에 적은 문서를 [문서링크]로 넣을 자리(없으면 1안 맨 위 '관련:' 줄)\n"
             "  {단지명} {담당자} {전화번호} {관리소} — 기본정보에서 자동\n"
             "  {날짜:제출기한} → 2026년 11월 6일(금)\n"
             "  {날짜:만료일|일} → 2026년 11월 6일   |월 → 2026년 11월   |점 → 2026.11.06.\n"
             "  {입력:차수} — 직접 적는 칸   {숫자:수량=10} — 숫자(처음 값 10)   {금액:청구액} — 금○원(금…원)\n"
             "  {계산:금액=수량*단가} — 다른 칸으로 계산   {단지:관리소명} — 단지기본정보의 값\n"
+            "  {선택:형별=36|46|51|59} — 체크해서 고르는 칸(여러 개 → '36, 51')   "
+            "표 줄의 {선택값:형별} — 고른 것마다 그 줄을 하나씩\n"
             "  머리말 '분야: 시설' → 시작 화면 분야,  '주기: 매월'·'주기: 매주' → 매월·매주 작성 묶음\n\n"
             "표\n"
             "  | 구분 | 내용 |   ← 첫 줄은 머리글\n"
@@ -2089,6 +2343,194 @@ class App:
 
     def _toggle_maximize(self):
         self.root.state("normal" if self.root.state() == "zoomed" else "zoomed")
+
+    # ================= 환경 설정: 디자인 =================
+    FONT_DEFAULT = "디자인 기본 글씨체"
+    SAMPLE = "가나다라 공문 자동작성 2026. 11. 16."
+
+    def _build_tab_design(self):
+        """디자인 5가지 + 내 사진 디자인과 글씨체를 고르는 화면. 저장하면 다시 시작해 적용한다."""
+        from tkinter import font as tkfont
+        tab = ttk.Frame(self.nb, padding=(18, 12))
+        self.nb.add(tab, text="  환경 설정  ")
+        saved = self.cfg.get("design") or {}
+        self.design_name = tk.StringVar(value=ui_kit.DESIGN)
+        have = set(tkfont.families(self.root))
+        fonts = [f for f in ui_kit.FONT_CHOICES if f in have] or ["맑은 고딕"]
+        self.design_font = tk.StringVar(value=saved.get("font") if saved.get("font") in fonts else self.FONT_DEFAULT)
+        # 내 사진 디자인: 고른 사진 파일과 거기서 뽑은 색 (저장한 적 있으면 그대로 보여 준다)
+        photo = saved.get("photo", "") if saved.get("name") == ui_kit.PHOTO_DESIGN else ""
+        self.photo_path = photo if photo and os.path.isfile(photo) else ""
+        self.photo_colors = saved.get("colors") if self.photo_path else None
+        self.photo_new = False
+        self._photo_thumb = None
+
+        ttk.Label(tab, text="디자인", font=(ui_kit.FONT, 13, "bold")).pack(anchor="w")
+        ttk.Label(tab, foreground=SUB, text="마음에 드는 디자인을 누르고 [저장하고 다시 시작]을 누르면 "
+                                             "프로그램이 다시 켜지면서 바뀝니다. 작성 중인 내용은 저장해 두세요.\n"
+                                             "'내 사진'을 누르면 사진을 골라, 사진의 색으로 화면을 꾸미고 "
+                                             "첫 화면 배너에 사진을 깝니다.").pack(anchor="w", pady=(2, 10))
+        grid = ttk.Frame(tab)
+        grid.pack(anchor="w")
+        self.design_cards = {}
+        for i, name in enumerate(list(ui_kit.DESIGNS) + [ui_kit.PHOTO_DESIGN]):
+            card = tk.Canvas(grid, width=int(230 * self.k), height=int(150 * self.k), highlightthickness=0,
+                             bg=ttk.Style().lookup("TFrame", "background") or "#fafafa", cursor="hand2")
+            card.grid(row=i // 3, column=i % 3, padx=(0, 14), pady=(0, 14))
+            card.bind("<Button-1>", lambda _e, n=name: self._pick_design(n))
+            self.design_cards[name] = card
+        ff = ttk.Frame(tab)
+        ff.pack(anchor="w", pady=(4, 0))
+        ttk.Label(ff, text="글씨체", font=FONT_B).pack(side="left")
+        cb = ttk.Combobox(ff, state="readonly", width=20, textvariable=self.design_font,
+                          values=[self.FONT_DEFAULT] + fonts)
+        cb.pack(side="left", padx=8)
+        cb.bind("<<ComboboxSelected>>", lambda _e: self._draw_design_cards())
+        self.photo_btn = ttk.Button(ff, text="사진 바꾸기", command=self._choose_photo)
+        self.design_sample = tk.Label(tab, text=self.SAMPLE, anchor="w", bg="white", fg=BROWN, padx=12, pady=8)
+        self.design_sample.pack(anchor="w", fill="x", pady=(10, 0))
+        b = ttk.Frame(tab)
+        b.pack(anchor="w", pady=(14, 0))
+        ttk.Button(b, text="저장하고 다시 시작", style="Accent.TButton", command=self._save_design).pack(side="left")
+        ttk.Button(b, text="처음 디자인으로", command=lambda: (self.design_font.set(self.FONT_DEFAULT),
+                                                          self._pick_design(ui_kit.DEFAULT_DESIGN))
+                   ).pack(side="left", padx=8)
+        self._draw_design_cards()
+
+    def _design_data(self, name: str) -> dict:
+        """디자인 이름의 색 묶음. 내 사진은 사진에서 뽑은 색(사진이 없으면 기본 색)."""
+        if name == ui_kit.PHOTO_DESIGN:
+            return self.photo_colors or ui_kit.DESIGNS[ui_kit.DEFAULT_DESIGN]
+        return ui_kit.DESIGNS[name]
+
+    def _design_font(self, name: str) -> str:
+        f = self.design_font.get()
+        return self._design_data(name)["font"] if f == self.FONT_DEFAULT else f
+
+    def _pick_design(self, name: str):
+        if name == ui_kit.PHOTO_DESIGN and not self.photo_path:
+            self._choose_photo()
+            return
+        self.design_name.set(name)
+        self._draw_design_cards()
+
+    def _choose_photo(self) -> bool:
+        """사진 파일을 골라 색을 뽑는다. 고르면 True."""
+        path = filedialog.askopenfilename(
+            parent=self.root, title="디자인에 쓸 사진 고르기",
+            filetypes=[("사진", "*.jpg *.jpeg *.png *.bmp *.gif *.webp"), ("모든 파일", "*.*")])
+        if not path:
+            return False
+        try:
+            colors = ui_kit.palette_from_photo(path)
+        except Exception as e:
+            messagebox.showerror("사진 고르기", f"사진을 읽지 못했습니다.\n{e}", parent=self.root)
+            return False
+        self.photo_path, self.photo_colors, self.photo_new = path, colors, True
+        self.design_name.set(ui_kit.PHOTO_DESIGN)
+        self._draw_design_cards()
+        return True
+
+    def _photo_preview(self, w: int, h: int):
+        """미리보기 카드의 배너 자리에 넣을 작은 사진(첫 화면 배너처럼 왼쪽을 어둡게 덮는다)."""
+        try:
+            from PIL import Image, ImageOps, ImageTk
+            src = ui_kit._photo(self.photo_path)
+            pic = ImageOps.fit(src, (w, h), method=Image.LANCZOS).convert("RGBA")
+            fade = Image.linear_gradient("L").rotate(90).resize((w, h)).point(lambda p: int(215 - p * 0.55))
+            cover = Image.new("RGBA", (w, h), ui_kit.rgb(self.photo_colors["hero"][1]))
+            cover.putalpha(fade)
+            pic.alpha_composite(cover)
+            return ImageTk.PhotoImage(pic, master=self.root)
+        except Exception:
+            return None
+
+    def _draw_design_cards(self):
+        """디자인마다 작은 미리보기: 바탕·왼쪽 메뉴·배너·단추·글자."""
+        k = self.k
+        for name, cv in self.design_cards.items():
+            d = self._design_data(name)
+            picked = name == self.design_name.get()
+            font = self._design_font(name)
+            cv.delete("all")
+            W, H = int(cv["width"]), int(cv["height"])
+            is_photo = name == ui_kit.PHOTO_DESIGN
+            if is_photo and not self.photo_path:       # 아직 사진을 안 고름: 사진 고르기 칸
+                cv.create_rectangle(3, 3, W - 3, H - 3, fill="#ffffff", outline="#9fb0cc", dash=(5, 3))
+                cv.create_text(W / 2, H / 2 - 18 * k, text="", fill=ui_kit.PRIMARY, font=("Segoe MDL2 Assets", 18))
+                cv.create_text(W / 2, H / 2 + 12 * k, text="내 사진으로 꾸미기", fill=ui_kit.TEXT,
+                               font=(ui_kit.FONT, 11, "bold"))
+                cv.create_text(W / 2, H / 2 + 32 * k, text="눌러서 사진 고르기", fill=SUB, font=(ui_kit.FONT, 8))
+                continue
+            ui_kit.round_rect(cv, 2, 2, W - 2, H - 2, 12 * k, fill=d["page"],
+                       outline=d["primary"] if picked else d["border"], width=3 if picked else 1)
+            cv.create_rectangle(10 * k, 10 * k, 52 * k, H - 38 * k, fill=d["sidebar"], outline=d["border"])
+            for j in range(3):
+                y = 22 * k + j * 18 * k
+                cv.create_rectangle(16 * k, y, 46 * k, y + 8 * k, outline="",
+                                    fill=d["soft"] if j == 0 else d["line"])
+            h0, h1 = d["hero"]
+            thumb = self._photo_preview(int(W - 70 * k), int(36 * k)) if is_photo else None
+            if thumb:
+                self._photo_thumb = thumb              # 붙잡아 두지 않으면 그림이 사라진다
+                cv.create_image(60 * k, 10 * k, anchor="nw", image=thumb)
+            else:
+                cv.create_rectangle(60 * k, 10 * k, (60 + 80) * k, 46 * k, fill=h0, outline="")
+                cv.create_rectangle((60 + 80) * k, 10 * k, W - 10 * k, 46 * k, fill=h1, outline="")
+            cv.create_text(68 * k, 28 * k, anchor="w", text="공문 작성", fill="#ffffff",
+                           font=(font, 10, "bold"))
+            cv.create_rectangle(60 * k, 54 * k, W - 10 * k, H - 38 * k, fill="#ffffff", outline=d["border"])
+            cv.create_text(68 * k, 66 * k, anchor="w", text="가나다 공문", fill=d["text"], font=(font, 9))
+            cv.create_text(68 * k, 82 * k, anchor="w", text="설명 글자", fill=d["sub"], font=(font, 8))
+            ui_kit.round_rect(cv, W - 64 * k, 72 * k, W - 16 * k, 94 * k, 8 * k, fill=d["primary"], outline="")
+            cv.create_text(W - 40 * k, 83 * k, text="확인", fill="#ffffff", font=(font, 8, "bold"))
+            cv.create_text(14 * k, H - 19 * k, anchor="w", text=("✔ " if picked else "") + name,
+                           fill=d["primary_d"] if picked else d["text"], font=(font, 11, "bold"))
+            cv.create_text(W - 12 * k, H - 19 * k, anchor="e", text=font, fill=d["sub"], font=(font, 8))
+        n = self.design_name.get()
+        self.design_sample.config(text=f"{self.SAMPLE}   ·   {n} / {self._design_font(n)}",
+                                  font=(self._design_font(n), 12), fg=self._design_data(n)["text"])
+        if self.photo_path and not self.photo_btn.winfo_ismapped():   # 사진을 고른 뒤에는 바꾸기 단추
+            self.photo_btn.pack(side="left", padx=(16, 0))
+
+    def _keep_photo(self) -> str:
+        """고른 사진을 설정 폴더에 줄여 복사해 둔다(원본을 옮기거나 지워도 디자인이 유지되게)."""
+        from PIL import Image
+        dst = os.path.join(paths.user_dir(), "design_photo.jpg")
+        with Image.open(self.photo_path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((2400, 2400))
+            im.save(dst, "JPEG", quality=90)
+        return dst
+
+    def _save_design(self):
+        name, f = self.design_name.get(), self.design_font.get()
+        design = {"name": name, "font": "" if f == self.FONT_DEFAULT else f}
+        same = design == {"name": ui_kit.DESIGN, "font": (self.cfg.get("design") or {}).get("font", "")}
+        if same and not (name == ui_kit.PHOTO_DESIGN and self.photo_new):
+            messagebox.showinfo("환경 설정", "지금 쓰는 디자인과 같습니다.", parent=self.root)
+            return
+        if not messagebox.askyesno("디자인 바꾸기", f"'{name}' 디자인({self._design_font(name)})으로 바꾸고\n"
+                                   "프로그램을 다시 시작할까요?", parent=self.root):
+            return
+        if name == ui_kit.PHOTO_DESIGN:
+            try:
+                photo = self._keep_photo() if self.photo_new else self.photo_path
+            except Exception as e:
+                messagebox.showerror("디자인 바꾸기", f"사진을 저장하지 못했습니다.\n{e}", parent=self.root)
+                return
+            design.update(photo=photo, colors=self.photo_colors)
+        self.cfg["design"] = design
+        self._on_close()                       # 설정을 저장하고 창을 닫는다(디자인도 함께 저장)
+        try:
+            settings_store.set_value("design", design)
+        except Exception:
+            pass
+        import subprocess
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable], cwd=paths.program_dir())
+        else:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__)], cwd=paths.program_dir())
 
     def _on_close(self):
         if self.root.state() == "normal":       # 다음에 같은 크기·위치의 창으로 연다

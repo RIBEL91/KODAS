@@ -36,6 +36,137 @@ TINTS = {                             # (옅은 바탕, 진한 색)
     "red": ("#fde8e8", "#e04848"),
 }
 
+# ---------------- 디자인(환경 설정에서 고름) ----------------
+# 프로그램이 시작할 때 저장된 디자인을 이 모듈의 색·글꼴에 입힌다(다른 화면은 여기 값을 가져다 쓴다).
+# 바꾼 디자인은 다시 시작하면 적용된다.
+DESIGNS = {
+    "기본 파랑": dict(font="맑은 고딕", page="#f4f7fd", sidebar="#fafbff", border="#e5eaf4", line="#e8ecf4",
+                  primary="#3d6df2", primary_d="#2b57d4", soft="#dfe8fd", hover="#eef2fc",
+                  text="#1c2433", sub="#687489", hero=("#5c93fb", "#6a5df0")),
+    "초록 숲": dict(font="나눔고딕", page="#f2f8f4", sidebar="#f9fcfa", border="#dcebe1", line="#e1ede5",
+                 primary="#1e9466", primary_d="#14724e", soft="#d5f0e3", hover="#e9f6ef",
+                 text="#1a2a21", sub="#5d7267", hero=("#3cc48f", "#178a87")),
+    "따뜻한 주황": dict(font="한컴 고딕", page="#fbf6f1", sidebar="#fffbf7", border="#efe1d3", line="#f1e5d9",
+                   primary="#dd6b1c", primary_d="#b25414", soft="#fbe3cf", hover="#fcefe4",
+                   text="#2d2219", sub="#7a6a5c", hero=("#f7a04f", "#e0573a")),
+    "보라 라벤더": dict(font="함초롬돋움", page="#f6f4fd", sidebar="#fbfaff", border="#e6e0f6", line="#e9e5f6",
+                   primary="#7552dd", primary_d="#5b3cc0", soft="#e7defb", hover="#f1ebfc",
+                   text="#221d33", sub="#6e6789", hero=("#9b7bf5", "#cf5fb6")),
+    "차분한 회색": dict(font="굴림", page="#f2f3f5", sidebar="#fafafa", border="#dfe2e6", line="#e4e6e9",
+                   primary="#4b5563", primary_d="#323a46", soft="#e1e4e8", hover="#eceef1",
+                   text="#1f2328", sub="#6b7280", hero=("#6b7a8f", "#3a4352")),
+}
+DEFAULT_DESIGN = "기본 파랑"
+PHOTO_DESIGN = "내 사진"          # 사진을 고르면 그 사진에서 색을 뽑고, 첫 화면 배너에 사진을 깐다
+FONT_CHOICES = ("맑은 고딕", "나눔고딕", "한컴 고딕", "함초롬돋움", "한컴산뜻돋움", "굴림", "돋움", "바탕")
+DESIGN = DEFAULT_DESIGN
+HERO_PHOTO = ""                   # 배너에 깔 사진 파일(내 사진 디자인일 때만)
+
+
+def _hsv_hex(h: float, s: float, v: float) -> str:
+    import colorsys
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, max(0.0, min(1.0, s)), max(0.0, min(1.0, v)))
+    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def palette_from_photo(path: str) -> dict:
+    """사진에서 대표 색을 뽑아 디자인 색 묶음(DESIGNS 한 칸과 같은 모양)을 만든다.
+
+    사진을 작게 줄여 8색으로 묶고, 많이 쓰였으면서 선명한 색을 강조색으로 고른다.
+    글자가 잘 읽히도록 밝기·채도는 알맞은 범위로 맞춘다. 흑백에 가까운 사진이면 회색 계열.
+    """
+    import colorsys
+    from PIL import Image
+    with Image.open(path) as im:
+        small = im.convert("RGB").resize((96, 96))
+    q = small.quantize(colors=8, method=Image.Quantize.MEDIANCUT)
+    pal = q.getpalette()[:24]
+    counts = sorted(q.getcolors(), reverse=True)           # [(개수, 번호)]
+    total = sum(c for c, _ in counts) or 1
+    cands = []
+    for cnt, idx in counts:
+        r, g, b = pal[idx * 3: idx * 3 + 3]
+        h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        cands.append((cnt / total, h, s, v))
+    score = lambda c: c[0] ** 0.6 * (c[2] + 0.15)          # noqa: E731  많이 쓰이고 선명할수록
+    vivid = [c for c in cands if c[2] > 0.22 and c[3] > 0.18]
+    if vivid:
+        main = max(vivid, key=score)
+        others = [c for c in vivid if c is not main and abs(((c[1] - main[1]) + 0.5) % 1 - 0.5) > 0.04]
+        second = max(others, key=score) if others else None
+        h, s = main[1], max(0.55, min(0.85, main[2]))
+        h2 = second[1] if second else h + 0.08
+        s2 = max(0.40, min(0.85, second[2])) if second else s
+        gray = False
+    else:                                                  # 흑백·무채색 사진
+        h, s, h2, s2, gray = 0.6, 0.12, 0.6, 0.15, True
+    return dict(
+        font="맑은 고딕",
+        page=_hsv_hex(h, 0.02 if gray else 0.04, 0.975),
+        sidebar=_hsv_hex(h, 0.02, 0.99),
+        border=_hsv_hex(h, 0.05 if gray else 0.10, 0.91),
+        line=_hsv_hex(h, 0.04 if gray else 0.08, 0.93),
+        primary=_hsv_hex(h, s, 0.42 if gray else 0.62),
+        primary_d=_hsv_hex(h, min(1, s + 0.05), 0.30 if gray else 0.48),
+        soft=_hsv_hex(h, 0.15, 0.97),
+        hover=_hsv_hex(h, 0.07, 0.98),
+        text=_hsv_hex(h, 0.1 if gray else 0.25, 0.18),
+        sub=_hsv_hex(h, 0.08 if gray else 0.15, 0.48),
+        hero=(_hsv_hex(h, s * 0.9, 0.55 if gray else 0.80), _hsv_hex(h2, s2, 0.35 if gray else 0.62)),
+    )
+
+
+def apply_design(name: str = DEFAULT_DESIGN, font: str = "", colors: dict | None = None,
+                 photo: str = "") -> None:
+    """디자인(색 묶음)과 글씨체를 이 모듈의 값에 입힌다. font를 비우면 그 디자인의 글씨체.
+
+    '내 사진' 디자인은 사진에서 뽑아 저장해 둔 colors와 배너에 깔 사진 파일 photo를 쓴다.
+    """
+    global DESIGN, FONT, PAGE, SIDEBAR, BORDER, LINE, PRIMARY, PRIMARY_D, PRIMARY_SOFT, HOVER_SOFT
+    global TEXT, SUB, HERO, HERO_PHOTO
+    HERO_PHOTO = ""
+    d = None
+    if name == PHOTO_DESIGN and isinstance(colors, dict) and all(k in colors for k in DESIGNS[DEFAULT_DESIGN]):
+        d = colors
+        HERO_PHOTO = photo if photo and os.path.isfile(photo) else ""
+    if d is None:
+        d = DESIGNS.get(name) or DESIGNS[DEFAULT_DESIGN]
+        name = name if name in DESIGNS else DEFAULT_DESIGN
+    DESIGN = name
+    FONT = font or d["font"]
+    PAGE, SIDEBAR, BORDER, LINE = d["page"], d["sidebar"], d["border"], d["line"]
+    PRIMARY, PRIMARY_D, PRIMARY_SOFT, HOVER_SOFT = d["primary"], d["primary_d"], d["soft"], d["hover"]
+    TEXT, SUB, HERO = d["text"], d["sub"], tuple(d["hero"])
+    TINTS["blue"] = (PRIMARY_SOFT, PRIMARY)      # 강조 아이콘도 디자인 색으로
+
+
+@lru_cache(maxsize=2)
+def _photo(path: str):
+    """배너 사진을 한 번만 읽어 둔다(창 크기가 바뀔 때마다 다시 읽지 않게)."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((2400, 2400))
+            return im
+    except Exception:
+        return None
+
+
+def saved_design() -> dict:
+    """설정 파일에 저장된 디자인 {'name': …, 'font': …}. 없으면 빈 dict."""
+    try:
+        import settings_store
+        d = settings_store.load_raw().get("design") or {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+_saved = saved_design()
+apply_design(_saved.get("name", DEFAULT_DESIGN), _saved.get("font", ""), _saved.get("colors"),
+             _saved.get("photo", ""))
+
 # ---------------- 아이콘(윈도 기본 글꼴 Segoe MDL2 Assets) ----------------
 ICON = {
     "home": "\ue80f", "edit": "\ue70f", "layers": "\ue81e", "history": "\ue81c", "settings": "\ue713",
@@ -133,6 +264,22 @@ class Painter:
         clip = self.Image.new("RGBA", mask.size, (0, 0, 0, 0))
         clip.paste(layer, (0, 0), mask)
         self.im.alpha_composite(clip, (self.S(x0), self.S(y0)))
+
+    def photo_in(self, x0, y0, mask, path, tint):
+        """mask(둥근 배너) 안에 사진을 꽉 채워 깔고, 흰 글자가 읽히게 왼쪽을 tint 색으로 어둡게 덮는다."""
+        from PIL import ImageOps
+        src = _photo(path)
+        if src is None:
+            return False
+        pic = ImageOps.fit(src, mask.size, method=self.Image.LANCZOS).convert("RGBA")
+        bw, bh = mask.size
+        fade = self.Image.linear_gradient("L").rotate(90).resize((bw, bh))      # 왼 0 → 오른 255
+        fade = fade.point(lambda p: int(215 - p * 0.55))                          # 왼쪽 진하게, 오른쪽 옅게
+        cover = self.Image.new("RGBA", (bw, bh), rgb(tint))
+        cover.putalpha(fade)
+        pic.alpha_composite(cover)
+        self.im.paste(pic, (self.S(x0), self.S(y0)), mask)
+        return True
 
     def circle(self, cx, cy, rad, fill, alpha=255):
         self.d.ellipse(self._box(cx - rad, cy - rad, cx + rad, cy + rad), fill=rgb(fill, alpha))

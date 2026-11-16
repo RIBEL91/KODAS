@@ -22,6 +22,11 @@ WORK_WINDOW_PARTS = ("formfolder_dochandler", "nsancdocinfodlg", "nsanclinedlg",
                      "spo_select_arrange_binder", "dochandler", "relate", "docinfo")
 
 
+# 사내 메신저(AtMessenger7, 레지스트리 ATMSG7 → Launcher.exe)를 여는 프로토콜과 그것을 부르는 사이트
+MESSENGER_PROTOCOLS = ("atmsg7",)
+MESSENGER_ORIGINS = ("https://homnet.kohom.or.kr", "https://gw.kohom.or.kr")
+
+
 class LoginError(Exception):
     """사용자에게 그대로 보여줄 수 있는 로그인 실패 사유."""
 
@@ -49,9 +54,14 @@ def _common(options, headless: bool, detach: bool):
     # 'Chrome이 자동화된 테스트 소프트웨어에 의해 제어되고 있습니다' 안내줄 숨김
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    # 로그인 뒤 '비밀번호를 저장하시겠습니까?' 말풍선을 띄우지 않는다
-    options.add_experimental_option("prefs", {"credentials_enable_service": False,
-                                              "profile.password_manager_enabled": False})
+    # 로그인 뒤 '비밀번호를 저장하시겠습니까?' 말풍선을 띄우지 않는다.
+    # 홈넷 로그인 뒤 뜨는 'AtMessenger7을(를) 여시겠습니까?'(atmsg7: 프로토콜)는 [항상 열기]로 둔다.
+    options.add_experimental_option("prefs", {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+        "protocol_handler": {"allowed_origin_protocol_pairs": {
+            origin: {p: True for p in MESSENGER_PROTOCOLS} for origin in MESSENGER_ORIGINS}},
+    })
     return options
 
 

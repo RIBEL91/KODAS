@@ -72,7 +72,7 @@ def test_merged_folder_areas():
     areas = {}
     for t in items:
         areas.setdefault(t.area, []).append(t)
-    assert len([t for t in areas["임대"] if t.file_name[:2].isdigit()]) == 25   # 오영철 임대 서식 그대로
+    assert len([t for t in areas["임대"] if t.file_name[:2].isdigit()]) == 27   # 오영철 임대 서식 그대로(+33번·34번)
     assert {t.cycle for t in areas["주택관리"]} == {"매월", "매주"}
     assert all(areas.get(a) for a in ("시설", "주거복지", "주택관리"))
-    assert sum(len(v) for v in areas.values()) == 25 + 64
+    assert sum(len(v) for v in areas.values()) == 27 + 64

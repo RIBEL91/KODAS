@@ -19,8 +19,9 @@ class _Alert:
 class FakeDriver:
     """창(핸들 → 주소·글자)과 [다음] 순서만 흉내 낸다. items: (종류, 제목) — doc · view(같은 창) · popup(새 창)"""
 
-    def __init__(self, items, view_has_next=True):
+    def __init__(self, items, view_has_next=True, page_end=()):
         self.items, self.pos, self.view_has_next = items, 0, view_has_next
+        self.page_end = set(page_end)           # 이 줄(목록 한 쪽의 끝)에서는 [다음]을 눌러도 넘어가지 않는다
         self.win = {"MAIN": ("https://homnet.kohom.or.kr/main", "")}
         self.cur = "MAIN"
         self.closed, self.viewer = [], "V"
@@ -76,11 +77,14 @@ class FakeDriver:
             return False
         if self.pos + 1 >= len(self.items):
             return False
+        if self.pos in self.page_end:
+            return True
         self.pos += 1
         self._show(self.viewer, self.pos)
         return True
 
     def open_after(self, title):
+        title = collector._shown(title)        # 열쇠(문서번호들 + 제목)의 마지막은 제목
         i = next(i for i, (_, t) in enumerate(self.items) if t == title) + 1
         if i >= len(self.items):
             raise collector.CollectError("다음 줄 없음")
@@ -103,7 +107,8 @@ def run(monkeypatch, tmp_path, drv, count=10):
     monkeypatch.setattr(collector, "drain_alerts", lambda *a, **k: "")
     monkeypatch.setattr(collector.time, "sleep", lambda s: None)
     monkeypatch.setattr(collector, "_close_window", lambda d, h: d.win.pop(h, None) and d.closed.append(h))
-    monkeypatch.setattr(collector, "open_first_doc", lambda d, kw, log, after_title="": d.open_after(after_title))
+    monkeypatch.setattr(collector, "open_first_doc", lambda d, kw, log, after_title="", **k: d.open_after(after_title))
+    monkeypatch.setattr(collector, "unlock_pw_window", lambda *a, **k: "")
     monkeypatch.setattr(collector, "find_viewer", lambda d: "V")
     logs = []
     res = collector.collect(drv, str(tmp_path), count, logs.append)
@@ -137,3 +142,11 @@ def test_helpers():
     rows = [{"text": ["접수", "A 보고"]}, {"text": ["생산", "B 보고"]}, {"text": ["생산", "C"]}]
     assert collector.row_after(rows, "A  보고") == 1 and collector.row_after(rows, "C") is None
     assert collector.row_after(rows, "없음") is None
+
+
+def test_page_end_continues_on_next_list_page(monkeypatch, tmp_path):
+    """대장 목록 한 쪽(50줄) 끝에서 [다음]이 넘어가지 않으면 목록의 다음 줄(다음 쪽)에서 이어 받는다."""
+    drv = FakeDriver([("doc", "쪽 끝 앞 문서"), ("doc", "쪽 마지막 문서"), ("doc", "다음 쪽 첫 문서"),
+                      ("doc", "다음 쪽 둘째 문서")], page_end={1})
+    res, logs = run(monkeypatch, tmp_path, drv)
+    assert res["names"] == ["쪽 끝 앞 문서", "쪽 마지막 문서", "다음 쪽 첫 문서", "다음 쪽 둘째 문서"]

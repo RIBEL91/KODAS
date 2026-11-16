@@ -98,6 +98,66 @@ def open_register(driver) -> None:
     time.sleep(1)
 
 
+_JS_SELECT_YEAR = r"""
+var o = window.CreateYearCombo, want = String(arguments[0]), ids = [];
+if (!o) return {ok: false, ids: ids};
+for (var i = 0; i < o.GetItemCount(); i++) ids.push(String(o.GetID(i)));
+var idx = ids.indexOf(want);
+if (idx < 0) return {ok: false, ids: ids};
+if (o.GetCurSel() !== idx) { o.SetCurSel(idx); CreateYearCombo_changed(); }   // 바꾼 뒤 목록을 다시 읽는다
+return {ok: true, ids: ids};
+"""
+
+
+def select_year(driver, year: int | str) -> None:
+    """기록물등록대장의 생산연도를 고른다(open_register 뒤, contentview 안에서). 없는 해면 LedgerError."""
+    res = driver.execute_script(_JS_SELECT_YEAR, str(year)) or {}
+    if not res.get("ok"):
+        have = res.get("ids") or []
+        raise LedgerError(f"기록물등록대장에 {year}년 대장이 없습니다."
+                          + (f" (고를 수 있는 해: {have[-1]}～{have[0]})" if have else ""))
+    end = time.time() + 15                # 그 해 목록이 다 그려질 때까지
+    while time.time() < end:
+        time.sleep(0.7)
+        try:
+            if str(driver.execute_script("return String(window.currentLedgerYear)")) == str(year):
+                break
+        except Exception:
+            pass
+    time.sleep(1.5)
+
+
+def list_rows(driver) -> list[dict]:
+    return json.loads(driver.execute_script(_JS_ROWS) or "[]")
+
+
+def total_pages(driver) -> int:
+    try:
+        return int(driver.execute_script("return parseInt(window.totalPage, 10) || 1;") or 1)
+    except Exception:
+        return 1
+
+
+def go_page(driver, page: int, words: str = "") -> list[dict]:
+    """기록물등록대장 목록의 page쪽(1부터, 한 쪽 50줄)을 연다. 검색어가 있으면 그 검색 결과의 page쪽.
+    그 쪽의 줄들을 돌려준다."""
+    before = [r.get("text") for r in list_rows(driver)[:2]]
+    driver.execute_script("document.getElementById('searchType').value = 'title';"
+                          "document.getElementById('editSearchCondition').value = arguments[0];"
+                          "searchMode = 1; search(arguments[1], arguments[1]);", words, int(page))
+    end, rows = time.time() + 20, []
+    while time.time() < end:
+        time.sleep(0.8)
+        try:
+            rows = list_rows(driver)
+        except Exception:
+            continue
+        if rows and ([r.get("text") for r in rows[:2]] != before or page == 1):
+            break
+    time.sleep(1)
+    return list_rows(driver)
+
+
 def search_register(driver, words: str) -> None:
     """기록물등록대장 목록을 제목으로 검색한다(open_register 뒤, contentview 안에서)."""
     driver.execute_script("document.getElementById('searchType').value = 'title';"

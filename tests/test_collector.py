@@ -49,7 +49,7 @@ def test_from_collected_anonymizes_and_parses(tmp_path):
     finally:
         dtpl.KNOWN_INFO = {}
     t = dtpl.parse(text, str(src))
-    assert t.area == "시설" and t.bundle == "수집한 서식" and t.internal
+    assert t.area == "시설" and t.bundle == "편철 · 시설관리관계철" and t.internal
     assert "시설관리관계철" in t.memo
     assert "{주소}" in t.title                                   # 105동 814호 → {주소}
     for gone in ("홍길동", "010-1234-5678", "1,250,000", "한빛엘리베이터", "-1234", "2026. 10. 15."):
@@ -143,3 +143,20 @@ def test_cut_footer_sender_and_signature():
     assert dtpl._cut_footer(lines) == ["1. 본문입니다.", "2. 계속 안내합니다."]
     body = ["1. 표입니다.", "| 구분 | 내용 |", "| 시설 | 점검 |", "붙임  1부.  끝."]
     assert dtpl._cut_footer(body) == body                       # 보통 표는 그대로
+
+
+def test_similar_key_ignores_dates_months_and_units():
+    k = collector.similar_key
+    assert k("사회복무요원 급여 지급(2025.12월분)") == k("사회복무요원 급여 지급(2025.11월분)")
+    assert k("사회복무요원 직무교육 실시보고(25.12)") == k("사회복무요원 직무교육 실시보고(25.11)")
+    assert k("임대(전환)보증금 수지 현황 보고(2025년11월)") == k("임대(전환)보증금 수지 현황 보고(2025년 11월)")
+    assert k("계약 해지(104동 1306호)") == k("계약 해지(101동 1411호)") == k("계약 해지(OOO동 OOO호)")
+    assert k("납부최고 1차") != k("납부최고 2차")
+    assert k("사회복무요원 급여 지급(2025.12월분)") != k("사회복무요원 직무교육 실시보고(25.12)")
+
+
+def test_mask_secure_doc_uses_ooo():
+    doc = {"text": "제  목\n계약 해지(104동 1306호)\n계약자: 홍길동 연락처 010-1234-5678", "html": ""}
+    out = collector._mask_secure_doc(doc)
+    assert "홍길동" not in out["text"] and "1306" not in out["text"] and "5678" not in out["text"]
+    assert "OOO동 OOO호" in out["text"] and "OOO-OOOO-OOOO" in out["text"]
