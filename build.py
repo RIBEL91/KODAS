@@ -49,6 +49,7 @@ def main():
     PyInstaller.__main__.run([
         "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", NAME, "--icon", p("assets", "app.ico"),
+        "--splash", p("assets", "splash.png"),     # 풀리는 몇 초 동안 '여는 중' 화면 (gui.bring_to_front에서 닫음)
         "--paths", p("app"),
         # webdriver.Chrome/Edge 지연 임포트를 PyInstaller가 놓치지 않도록
         "--collect-submodules", "selenium",

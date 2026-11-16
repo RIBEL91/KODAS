@@ -2596,7 +2596,30 @@ def main():
         pass
     root = tk.Tk()
     App(root)
+    root.after(200, lambda: bring_to_front(root))
     root.mainloop()
+
+
+def bring_to_front(root: tk.Tk) -> None:
+    """시작 화면을 닫고 창을 맨 앞으로 띄운다.
+
+    exe는 풀리는 데 몇 초 걸려, 그사이 다른 창을 누르면 KODAS 창이 뒤에 숨어
+    '안 열리는' 것처럼 보였다. 잠깐 맨 위로 올렸다가 내려 앞에 보이게 한다.
+    """
+    try:
+        import pyi_splash          # exe 시작 화면(build.py --splash). 소스 실행에는 없다.
+        pyi_splash.close()
+    except Exception:
+        pass
+    try:
+        if root.state() == "iconic":
+            root.deiconify()
+        root.lift()
+        root.attributes("-topmost", True)
+        root.focus_force()
+        root.after(400, lambda: root.attributes("-topmost", False))
+    except tk.TclError:
+        pass
 
 
 if __name__ == "__main__":
