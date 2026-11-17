@@ -91,3 +91,49 @@ def test_find_sheets(tmp_path):
     (d / "다른 파일.xlsx").write_bytes(b"")
     found = qe.find_sheets([str(tmp_path)], 2026)
     assert len(found) == 1 and found[0].endswith("평가표(광주).xlsx")
+
+
+def test_scan_finds_only_quality_sheets(tmp_path):
+    """[파일 넣기…] 목록: 이름과 상관없이 '항목별평가표' 시트가 있는 엑셀만."""
+    from openpyxl import Workbook
+    sub = tmp_path / "하위"
+    sub.mkdir()
+    for p, sheet in ((tmp_path / "2026년 상반기.xlsx", qe.SHEET), (sub / "품질평가 메모.xlsx", "Sheet"),
+                     (tmp_path / "관리비.xlsx", "Sheet1")):
+        wb = Workbook()
+        wb.active.title = sheet
+        wb.save(p)
+    (tmp_path / "~$2026년 상반기.xlsx").write_bytes(b"lock")
+    (tmp_path / "깨진.xlsx").write_bytes(b"not a zip")
+    found = qe.scan_sheets([str(tmp_path)])
+    assert [os.path.basename(p) for p in found] == ["2026년 상반기.xlsx"]
+    assert qe.quick_year(str(tmp_path / "2025년도 평가표.xlsx")) == 2025
+
+
+def _it(part="임대운영", no="1-1", seq=1, max_score=2.0, score=None, basis="", flag=False):
+    return qe.Item(row=1, part=part, area="", indicator="", no=no, seq=seq, text="항목",
+                   max_score=max_score, score=score, basis=basis, flag=flag)
+
+
+def test_auto_score_rules():
+    # 근거 없음 → 매기지 않음
+    assert qe.auto_score(_it(), _it(score=2))[0] is None
+    # 근거 있음 + 작년 점수 → 작년 점수(배점 넘지 않게)
+    assert qe.auto_score(_it(basis="양림2-12"), _it(score=1.5))[0] == 1.5
+    assert qe.auto_score(_it(basis="양림2-12", max_score=1), _it(score=2))[0] == 1
+    # 작년 점수 없음 → 만점, 가감점은 매기지 않음
+    assert qe.auto_score(_it(basis="양림2-12"), None)[0] == 2.0
+    assert qe.auto_score(_it(part="가감점", basis="화면캡처", max_score=2), None)[0] is None
+    # 해당없음: 가감점 0점, 작년도 해당없음이면 작년 점수, 그 밖엔 매기지 않음
+    assert qe.auto_score(_it(part="가감점", basis="해당없음"), None)[0] == 0
+    assert qe.auto_score(_it(basis="해당 없음"), _it(basis="해당없음", score=1))[0] == 1
+    assert qe.auto_score(_it(basis="해당없음"), _it(basis="양림2-1", score=2))[0] is None
+    # 작년보다 부족(노란 줄)은 점수는 넣되 확인 필요 표시
+    s, why = qe.auto_score(_it(basis="양림2-12", flag=True), _it(score=2))
+    assert s == 2 and "확인 필요" in why
+
+
+def test_auto_scores_match_prev_by_key():
+    cur = [_it(no="1-1", basis="a"), _it(no="1-2", basis="b")]
+    prev = [_it(no="1-2", score=0.5), _it(no="1-1", score=1)]
+    assert [s for _i, s, _w in qe.auto_scores(cur, prev)] == [1, 0.5]

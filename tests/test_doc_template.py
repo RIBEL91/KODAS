@@ -109,7 +109,7 @@ def test_hwp_html_uses_para_marks_not_css_margins():
 def test_bundled_templates_all_render():
     items, errors = dtpl.load_all(paths.template_dir())
     assert not errors
-    assert len([t for t in items if t.file_name[:2].isdigit()]) == 27    # 임대 서식(오영철, 34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
+    assert len([t for t in items if t.file_name[:2].isdigit()]) == 28    # 임대 서식(오영철, 35번 예비입주자 모집 공고·34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
     assert len([t for t in items if t.file_name.startswith(("월별", "주별"))]) == 64   # 관리업무 서식(ai3)
     import complex_info
     dtpl.set_complex(complex_info.resolve({}))
@@ -191,7 +191,7 @@ def test_cycle_header(tmp_path):
     for x in items:
         if x.cycle == "수시":
             others.setdefault(x.bundle, []).append(x.file_name[:2])
-    assert others == {"예비입주자": ["01", "02", "03", "04", "33"], "기타": ["19", "27", "28"],
+    assert others == {"예비입주자": ["01", "02", "03", "04", "33", "35"], "기타": ["19", "27", "28"],
                       "권리의무승계": ["21", "22", "23"], "가정어린이집": ["29", "30"]}
 
 
@@ -249,3 +249,28 @@ def test_choice_field_repeats_rows():
     assert dtpl.fill(t.title, v, {}) == "계약체결 안내(36, 51형)"
     assert dtpl.fill(t.body, v, {}) == "| 형별 | 동호 |\n| 36 |  |\n| 51 |  |\n  끝."
     assert dtpl.fill(t.title, {}, {}) == "계약체결 안내({형별}형)"      # 안 고르면 빈칸 표시
+
+
+def test_choice_from_complex_types():
+    """{선택:형별=단지:평형|형}: 고를 것은 단지기본정보 평형, 넣는 모양은 형·면적·형별."""
+    old = dict(dtpl.COMPLEX)
+    try:
+        dtpl.set_complex({"평형1": "46.89", "평형2": "51.93", "평형3": "", "관리소명": "광주양림2관리소"})
+        t = dtpl.parse("제목: 모집 공고({선택:형별=단지:평형|형}㎡)\n수신자: 내부결재\n---\n"
+                       "가. 모집형: {선택:형별=단지:평형|형별}\n| {선택값:형별|형} | {선택값:형별} |")
+        assert t.input_options() == {"형별": ["46.89", "51.93"]} and t.input_kinds() == {"형별": "선택"}
+        v = {"입력:형별": "51.93"}
+        assert dtpl.fill(t.title, v, {}) == "모집 공고(51㎡)"
+        assert dtpl.fill(t.body, v, {}).split("\n") == ["가. 모집형: 51형(전용면적 51.93㎡)", "| 51 | 51.93 |"]
+        v = {"입력:형별": "46.89, 51.93"}
+        assert dtpl.fill(t.title, v, {}) == "모집 공고(46, 51㎡)"
+        assert dtpl.choice_label("51.93", "형") == "51형(51.93㎡)" and dtpl.choice_label("36", "형") == "36형"
+    finally:
+        dtpl.set_complex(old)
+
+
+def test_recruit_notice_template():
+    """35번 국민임대 예비입주자 모집 공고: 형별은 단지기본정보 평형에서 고른다."""
+    t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("35_"))
+    assert "{선택:형별=단지:평형|형}" in t.title and t.input_kinds()["형별"] == "선택"
+    assert {"모집계획 문서번호", "모집인원", "기존인원"} <= set(t.input_fields())

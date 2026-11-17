@@ -44,10 +44,58 @@ class Item:
     flag: bool = False           # 작년과 비교해 없는 문서가 있어 노란색으로 표시
     evidence: list = field(default_factory=list)   # 증빙 파일 경로
     notes: list = field(default_factory=list)      # 파일 없이 이름만 둔 메모 폴더(예: '예비자 없음')
+    auto_why: str = ""           # [점수 자동 매기기]로 넣은 점수의 까닭(화면에만, 저장 안 함)
+    added: list = field(default_factory=list)   # 작년과 비교해 새로 들어간 근거 줄(엑셀에서 노란 글씨)
 
     @property
     def label(self) -> str:
         return f"{self.no} {self.text}".strip()
+
+
+BONUS = "가감점"
+_NA = re.compile(r"^\s*해당\s*(사항)?\s*없음")
+
+
+def _is_na(text: str) -> bool:
+    return bool(_NA.match(text or ""))
+
+
+def auto_score(it: Item, prev: Item | None) -> tuple[float | None, str]:
+    """항목 하나의 점수를 매긴다 → (점수, 까닭). 매길 수 없으면 (None, 까닭).
+
+    - 올해 평가 근거·증빙이 하나도 없으면 매기지 않는다(직접 넣도록 빈칸).
+    - 근거가 '해당없음': 작년에도 해당없음이면 작년 점수, 가감점이면 0점, 아니면 매기지 않는다.
+    - 근거가 있으면 작년 같은 항목(부문·번호·순서) 점수를 그대로(배점 넘지 않게).
+      작년 점수가 없으면 배점 만점, 가감점은 근거만으로 알 수 없어 매기지 않는다.
+    - 작년보다 없는 문서가 있는 항목(노란 줄)은 점수는 위와 같이 넣되 '확인 필요'를 붙인다.
+    """
+    body = "\n".join(x for x in (it.basis or "").split("\n") if not x.startswith(MISS_MARK)).strip()   # '✗ 없음' 줄 빼고
+    has_basis = bool(body) or bool(it.evidence) or bool(it.notes)
+    if not has_basis:
+        return None, "평가 근거·증빙이 없어 매기지 않았습니다"
+    prev_score = prev.score if prev is not None else None
+    if _is_na(it.basis) and not it.evidence:
+        if prev is not None and _is_na(prev.basis) and prev_score is not None:
+            return prev_score, f"해당없음 — 작년(해당없음)과 같이 {prev_score:g}점"
+        if it.part == BONUS:
+            return 0.0, "해당없음 — 가감점 0점"
+        return None, "근거가 '해당없음'이라 매기지 않았습니다(배점 기준 확인)"
+    if prev_score is not None:
+        score = min(prev_score, it.max_score) if it.max_score is not None and prev_score >= 0 else prev_score
+        why = f"작년 같은 항목 점수 {prev_score:g}점"
+    elif it.part == BONUS or it.max_score is None:
+        return None, "가감점은 근거만으로 점수를 알 수 없어 매기지 않았습니다"
+    else:
+        score, why = it.max_score, f"근거 있음 — 배점 만점 {it.max_score:g}점"
+    if it.flag:
+        why += " · 작년보다 없는 문서가 있어 확인 필요"
+    return score, why
+
+
+def auto_scores(items: list[Item], prev_items: list[Item] | None = None) -> list[tuple[Item, float | None, str]]:
+    """items 전체에 auto_score를 돌린다. 작년 항목은 (부문, 번호, 순서)로 짝짓는다."""
+    by_key = {(p.part, p.no, p.seq): p for p in (prev_items or [])}
+    return [(it, *auto_score(it, by_key.get((it.part, it.no, it.seq)))) for it in items]
 
 
 def _s(v) -> str:
@@ -84,7 +132,7 @@ def _merged_top(ws):
 def load(path: str) -> list[Item]:
     """평가표에서 평가항목을 읽는다."""
     from openpyxl import load_workbook
-    wb = load_workbook(path)
+    wb = load_workbook(path, rich_text=True)        # 평가 근거의 빨간·노란 글씨를 읽으려고
     if SHEET not in wb.sheetnames:
         raise ValueError(f"'{SHEET}' 시트가 없습니다. 품질평가 평가표 엑셀이 맞는지 확인해 주세요.")
     ws = wb[SHEET]
@@ -122,13 +170,42 @@ def load(path: str) -> list[Item]:
         if not part or part.startswith(("평가점수", "총점")):
             continue
         seq += 1
+        basis = _s(val(r, 9))
         items.append(Item(row=r, part=_short(part), area=_short(area), indicator=_short(ind), no=no, seq=seq,
                           text=text.lstrip("◦").strip(), max_score=_num(ws.cell(r, 6).value),
-                          score=_num(val(r, 7)), docs=_s(ws.cell(r, 8).value), basis=_s(val(r, 9)),
-                          reason=_s(val(r, 10)), flag=_is_flag(ws, r)))
+                          score=_num(val(r, 7)), docs=_s(ws.cell(r, 8).value), basis=basis,
+                          reason=_s(val(r, 10)),
+                          flag=_is_flag(ws, r) or any(x.startswith(MISS_MARK) for x in basis.split("\n")),
+                          added=_colored_lines(ws.cell(*_top_left(ws, r, 9)).value, ADDED_COLOR)))
     if not items:
         raise ValueError("평가항목을 찾지 못했습니다. 평가표 양식이 바뀌었는지 확인해 주세요.")
+    for it in items:
+        _migrate_reason(it)
     return items
+
+
+OLD_LACK = "작년과 비교해 없는 항목: "             # 예전에 점수 불인정 사유 칸에 적던 머리말
+OLD_SUP_LACK = re.compile(r"^(?P<label>.*?)\s*작성분과 비교해 없는 항목: (?P<rest>.*)$")
+
+
+def _migrate_reason(it: Item) -> None:
+    """예전 방식(사유 칸에 '작년과 비교해 없는 항목: …' + 노란 칸)을 평가 근거의 '✗ …' 줄(빨간 글씨)로 옮긴다."""
+    keep, miss = [], []
+    for line in (it.reason or "").split("\n"):
+        m = OLD_SUP_LACK.match(line)
+        if line.startswith(OLD_LACK):
+            miss += [f"{MISS_MARK}작년에 있고 올해 없음: {x.strip()}" for x in line[len(OLD_LACK):].split(", ") if x.strip()]
+        elif m:
+            miss += [f"{MISS_MARK}{m['label']} 작성분에 있고 올해 없음: {x.strip()}"
+                     for x in m["rest"].split(", ") if x.strip()]
+        else:
+            keep.append(line)
+    if not miss:
+        return
+    have = set(it.basis.split("\n"))
+    it.basis = "\n".join(x for x in [it.basis.strip()] + [x for x in miss if x not in have] if x)
+    it.reason = "\n".join(keep).strip()
+    it.flag = True
 
 
 def complex_name(path: str) -> str:
@@ -157,14 +234,14 @@ def save(path: str, items: list[Item], complex_label: str = "", backup_dir: str 
         bak = os.path.join(backup_dir, f"{stem}_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
         shutil.copy2(path, bak)
         _trim_backups(backup_dir, stem)
-    wb = load_workbook(path)
+    wb = load_workbook(path, rich_text=True)        # 다른 칸의 글자 꾸밈도 그대로 둔다
     ws = wb[SHEET]
     for it in items:
         _put(ws, it.row, 7, it.score)
-        _put(ws, it.row, 9, it.basis or None)
+        _put(ws, it.row, 9, _basis_value(ws, it) if it.basis else None)
         _put(ws, it.row, 10, it.reason or None)
-        for col in (9, 10):                 # 작년과 비교해 없는 문서가 있는 항목: 근거·사유 칸을 노란색으로
-            _fill(ws, it.row, col, it.flag)
+        for col in (9, 10):                 # 예전 방식의 노란 칸 칠은 지운다(없는 문서는 이제 빨간 글씨 줄로)
+            _fill(ws, it.row, col, False)
         if it.basis or it.reason:           # 근거·사유: 줄 바꿈·왼쪽 맞춤, 글자가 다 보이게 행 높이
             _tidy(ws, it.row, [c for c, v in ((9, it.basis), (10, it.reason)) if v])
     if complex_label:
@@ -181,7 +258,56 @@ def save(path: str, items: list[Item], complex_label: str = "", backup_dir: str 
     return bak
 
 
-FLAG_COLOR = "FFFFF200"          # 노란 표시(이 색일 때만 우리가 칠한 것으로 보고 지운다)
+FLAG_COLOR = "FFFFF200"          # (예전) 노란 칸 표시 — 이 색일 때만 우리가 칠한 것으로 보고 지운다
+MISS_MARK = "✗ "                 # 평가 근거의 '작년에 있고 올해 없는 문서' 줄 (quality_draft.MISS_MARK와 같게)
+MISS_COLOR = "FFFF0000"          # 없는 문서 줄: 빨간 글씨
+ADDED_COLOR = "FFFFC000"         # 작년과 비교해 새로 들어간 줄: 노란 글씨(흰 바탕에서 읽히는 진한 노랑)
+
+
+def _basis_value(ws, it: Item):
+    """평가 근거 칸에 쓸 값: 없는 문서 줄은 빨간 글씨, 새로 들어간 줄은 노란 글씨, 나머지는 칸 글꼴 그대로."""
+    lines = it.basis.split("\n")
+    added = set(it.added or [])
+    if not any(x.startswith(MISS_MARK) or x in added for x in lines):
+        return it.basis
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    f = ws.cell(*_top_left(ws, it.row, 9)).font
+    name, size = f.name or "맑은 고딕", f.sz or 11
+
+    def font(color=None):
+        return InlineFont(rFont=name, sz=size, color=color)
+    parts = []
+    for i, line in enumerate(lines):
+        text = line + ("\n" if i < len(lines) - 1 else "")
+        color = MISS_COLOR if line.startswith(MISS_MARK) else ADDED_COLOR if line in added else None
+        parts.append(TextBlock(font(color), text))
+    return CellRichText(parts)
+
+
+def _colored_lines(value, color: str) -> list:
+    """글자 꾸밈이 있는 칸에서 줄 전체가 color 글씨인 줄들."""
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    if not isinstance(value, CellRichText):
+        return []
+    chars = []                       # 글자마다 (글자, 이 색인지)
+    for part in value:
+        if isinstance(part, TextBlock):
+            c = part.font.color.rgb if part.font is not None and part.font.color is not None else None
+            on = str(c or "").upper() == color
+            chars += [(ch, on) for ch in part.text]
+        else:
+            chars += [(ch, False) for ch in str(part)]
+    out, cur, all_on = [], "", True
+    for ch, on in chars + [("\n", True)]:
+        if ch == "\n":
+            if cur.strip() and all_on:
+                out.append(cur.strip())
+            cur, all_on = "", True
+            continue
+        cur += ch
+        all_on = all_on and on
+    return out
 
 
 def _top_left(ws, row: int, col: int) -> tuple:
@@ -371,6 +497,55 @@ def make_folders(root: str, items: list[Item]) -> int:
             os.makedirs(d, exist_ok=True)
             made += 1
     return made
+
+
+def is_sheet(path: str) -> bool:
+    """품질평가 평가표 엑셀인지 — 파일 이름과 상관없이 '항목별평가표' 시트가 있는지 본다(빨리: 압축 안의 목록만)."""
+    import zipfile
+    if not path.lower().endswith(".xlsx") or os.path.basename(path).startswith("~$"):
+        return False
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("xl/workbook.xml").decode("utf-8", "ignore")
+    except Exception:
+        return False
+    return re.search(rf'<sheet\b[^>]*\bname="{re.escape(SHEET)}"', xml) is not None
+
+
+def scan_sheets(folders: list[str], depth: int = 4, limit: int = 3000) -> list[str]:
+    """폴더들(하위 depth단계까지)에서 품질평가 평가표 엑셀만 찾는다(최근 수정 순, 같은 파일은 한 번)."""
+    return sorted(iter_sheets(folders, depth, limit), key=os.path.getmtime, reverse=True)
+
+
+def quick_year(path: str) -> int | None:
+    """목록에 보일 평가년도: 파일 이름의 '2026년도'를 먼저(빠름), 없으면 시트 제목에서."""
+    m = re.search(r"(20\d\d)\s*년도", os.path.basename(path))
+    return int(m[1]) if m else sheet_year(path)
+
+
+def iter_sheets(folders: list[str], depth: int = 4, limit: int = 3000):
+    """scan_sheets와 같되 찾는 대로 하나씩 내준다(고르기 창이 바로바로 보여 주게).
+    살펴볼 엑셀이 limit개를 넘으면 거기까지만 본다."""
+    seen, looked = set(), 0
+    for top in folders:
+        if not top or not os.path.isdir(top):
+            continue
+        for base, dirs, names in os.walk(top):
+            if base.count(os.sep) - top.count(os.sep) >= depth:
+                dirs[:] = []
+            dirs[:] = [d for d in dirs if not d.startswith((".", "$")) and d not in ("node_modules", "AppData")]
+            for n in names:
+                if not n.lower().endswith(".xlsx") or n.startswith("~$"):
+                    continue
+                p = os.path.normcase(os.path.abspath(os.path.join(base, n)))
+                if p in seen:
+                    continue
+                seen.add(p)
+                looked += 1
+                if looked > limit:
+                    return
+                if is_sheet(p):
+                    yield os.path.join(base, n)
 
 
 def find_sheets(folders: list[str], year: int | None = None) -> list[str]:

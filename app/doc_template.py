@@ -28,6 +28,9 @@
 - {입력:항목=처음값}                   : 처음 값이 들어 있는 입력칸
 - {선택:항목=36|46|51}                 : 체크해서 고르는 칸(여러 개 가능). 고른 것을 '36, 51'처럼 넣는다
 - {선택값:항목}                        : 표 줄에 쓰면 고른 것마다 그 줄을 하나씩 만들고 이 자리에 그 값을 넣는다
+- {선택:형별=단지:평형|형}              : 고를 것을 단지기본정보의 평형1~6에서 가져온다. '|' 뒤는 넣는 모양:
+                                       형 51 · 면적 51.93 · 형별 51형(전용면적 51.93㎡) · (없으면) 51.93
+                                       {선택값:형별|형}처럼 표 줄에서도 쓴다
 - {숫자:항목} {숫자:항목=3200}          : 숫자 칸(1,234처럼 쉼표를 넣어 보여 준다)
 - {금액:항목}                         : 금액 칸. 113560 → 금113,560원(금일십일만삼천오백육십원)
 - {계산:이름=식}                       : 다른 칸으로 계산한 값. 예: {계산:금액=수량*단가}
@@ -52,7 +55,7 @@ DATE_RE = re.compile(r"\{날짜:([^{}|]+)(?:\|([^{}]+))?\}")
 INPUT_RE = re.compile(r"\{입력:([^{}|=]+)(?:=([^{}]*))?\}")      # 수기 입력 칸: 적은 글자 그대로 들어간다
 NUM_RE = re.compile(r"\{(숫자|금액):([^{}|=]+)(?:=([^{}]*))?\}")  # 숫자·금액 칸(값은 '입력:이름'에 담긴다)
 CHOICE_RE = re.compile(r"\{선택:([^{}|=]+)=([^{}]*)\}")           # 체크해서 고르는 칸: {선택:형별=36|46|51}
-CHOICE_ROW_RE = re.compile(r"\{선택값:([^{}|=]+)\}")              # 고른 것마다 줄을 되풀이하는 자리
+CHOICE_ROW_RE = re.compile(r"\{선택값:([^{}|=]+)(?:\|([^{}]+))?\}")   # 고른 것마다 줄을 되풀이하는 자리
 CHOICE_SEP = ", "
 CALC_RE = re.compile(r"\{계산:([^{}=]+)=([^{}]+)\}")
 COMPLEX_RE = re.compile(r"\{단지:([^{}|=]+)\}")
@@ -61,6 +64,47 @@ FIELD_RE = re.compile(r"\{([^{}:|]+)\}")
 COMPLEX_PREFIX = "단지:"
 # 단지기본정보 값(이름 → 값). 프로그램이 시작할 때와 단지기본정보를 저장할 때 set_complex로 채운다.
 COMPLEX: dict[str, str] = {}
+
+
+def choice_source(spec: str) -> list[str]:
+    """{선택:이름=…}의 고를 것들. '36|46|51'은 그대로, '단지:평형'은 단지기본정보 평형1~6의 값."""
+    s = (spec or "").strip()
+    if s.startswith(COMPLEX_PREFIX):
+        name = s[len(COMPLEX_PREFIX):].split("|")[0].strip()
+        if name == "평형":
+            vals = [COMPLEX.get(f"평형{i}", "").strip() for i in range(1, 7)]
+        else:
+            vals = COMPLEX.get(name, "").split(",")
+        return [v.strip() for v in vals if v.strip()]
+    return [x.strip() for x in s.split("|") if x.strip()]
+
+
+def choice_style(spec: str) -> str:
+    """'단지:평형|형' → '형' (넣는 모양). 글자로 늘어놓은 것('36|46')에는 모양이 없다."""
+    s = (spec or "").strip()
+    return s.split("|", 1)[1].strip() if s.startswith(COMPLEX_PREFIX) and "|" in s else ""
+
+
+def fmt_choice(value: str, style: str = "") -> str:
+    """고른 평형 값을 넣는 모양으로: '51.93' → 형 '51' · 면적 '51.93' · 형별 '51형(전용면적 51.93㎡)'."""
+    v = str(value or "").strip()
+    if style in ("형", "형별"):
+        m = re.match(r"\d+", v)
+        n = m.group(0) if m else v
+        if style == "형":
+            return n
+        area = re.sub(r"[^\d.]", "", v)
+        return f"{n}형(전용면적 {area}㎡)" if area and area != n else f"{n}형"
+    if style == "면적":
+        return re.sub(r"[^\d.]", "", v) or v
+    return v
+
+
+def choice_label(value: str, suffix: str = "") -> str:
+    """체크칸 글자: 형별에서 평형 값(51.93)이면 '51형(51.93㎡)', 아니면 '36형'처럼."""
+    if suffix == "형" and re.fullmatch(r"\d+\.\d+", str(value).strip()):
+        return f"{fmt_choice(value, '형')}형({value}㎡)"
+    return f"{value}{suffix}"
 
 
 def set_complex(values: dict) -> None:
@@ -316,7 +360,7 @@ class Template:
         """{선택:항목=36|46|51} 칸 이름 → 고를 것들(처음 나온 것 기준)."""
         out: dict[str, list[str]] = {}
         for m in CHOICE_RE.finditer(self._all_text() + "\n" + "\n".join(self.extras)):
-            out.setdefault(m.group(1).strip(), [x.strip() for x in m.group(2).split("|") if x.strip()])
+            out.setdefault(m.group(1).strip(), choice_source(m.group(2)))
         return out
 
     def input_fields(self) -> list[str]:
@@ -489,8 +533,11 @@ def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> st
         return v if v else m.group(0)
 
     def choice_sub(m):
-        v = _input_value(values, m.group(1).strip(), "")
-        return v if v else "{" + m.group(1).strip() + "}"     # 안 골랐으면 미리보기에 {형별}처럼
+        picks = chosen(values, m.group(1).strip())
+        if not picks:
+            return "{" + m.group(1).strip() + "}"             # 안 골랐으면 미리보기에 {형별}처럼
+        style = choice_style(m.group(2))
+        return CHOICE_SEP.join(fmt_choice(p, style) for p in picks)
 
     def num_sub(m):
         v = _input_value(values, m.group(2).strip(), m.group(3))
@@ -530,7 +577,9 @@ def repeat_choice_rows(text: str, values: dict) -> str:
             out.append(line)
             continue
         for v in picks:
-            out.append(CHOICE_ROW_RE.sub(lambda m, v=v: v if m.group(1).strip() == names[0] else m.group(0), line))
+            out.append(CHOICE_ROW_RE.sub(
+                lambda m, v=v: fmt_choice(v, (m.group(2) or "").strip()) if m.group(1).strip() == names[0]
+                else m.group(0), line))
     return "\n".join(out)
 
 

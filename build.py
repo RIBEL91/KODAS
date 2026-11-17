@@ -57,6 +57,7 @@ def main():
         # webdriver.Chrome/Edge 지연 임포트를 PyInstaller가 놓치지 않도록
         "--collect-submodules", "selenium",
         "--collect-data", "sv_ttk",
+        "--collect-all", "winrt",                  # 원터치 자동작성: Windows OCR로 WISE 화면 글자 읽기
         "--collect-data", "babel", "--hidden-import", "babel.numbers",   # 달력(tkcalendar) 한국어
         "--add-data", f"{p('assets')}{os.pathsep}assets",
         "--add-data", f"{p('서식')}{os.pathsep}서식",

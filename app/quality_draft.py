@@ -29,7 +29,9 @@ NUM_RE = re.compile(r"^(?P<office>.+?)-(?P<seq>\d+)$")
 # 날짜 없이 번호만: '광주양림2-239,1435,688' · '광주양림2관리소-219, 804' (번호 뒤에 괄호 날짜가 오면 아님)
 NUM_LIST_RE = re.compile(r"(?<![가-힣A-Za-z0-9])[가-힣A-Za-z][가-힣A-Za-z0-9]*\s*-\s*"
                          r"(?P<nums>\d{1,5}(?:\s*,\s*\d{1,5})*)(?![\d.]|\s*\()")
-LACK_PREFIX = "작년과 비교해 없는 항목: "
+LACK_PREFIX = "작년과 비교해 없는 항목: "          # (예전 방식) 점수 불인정 사유 칸에 적던 머리말 — 지울 때 알아본다
+SUP_LACK_MARK = "작성분과 비교해 없는 항목: "      # '2026년 상반기 작성분과 비교해 없는 항목: …'
+MISS_MARK = "✗ "                               # 평가 근거 칸의 '없는 문서' 줄(엑셀에서 빨간 글씨)
 
 
 def draft_key(title: str) -> str:
@@ -78,6 +80,9 @@ class Result:
     missing: list = field(default_factory=list)   # 못 찾은 것 설명(기록용)
     lacking: list = field(default_factory=list)   # 참고 근거에는 있고 고른 해에는 없는 문서(설명 또는 제목)
     carried: bool = False          # 문서번호 없는 근거를 그대로 옮김
+    docs: list = field(default_factory=list)      # 근거에 적은 문서들(Doc)
+    lack_keys: dict = field(default_factory=dict)  # lacking 이름 → 참고 문서의 제목 열쇠
+    sup_lacking: list = field(default_factory=list)  # 보탤 근거에 있는데 넣지 못한 문서와 그 이유
 
 
 def parse_refs(text: str, default_year: int | None = None) -> list[Ref]:
@@ -112,7 +117,7 @@ def parse_refs(text: str, default_year: int | None = None) -> list[Ref]:
 def fmt_ref(doc: Doc, style: Ref, with_pre: bool = True) -> str:
     d = doc.date
     md = f"{d.month:02d}.{d.day:02d}" if style.pad else f"{d.month}.{d.day}"
-    ds = {4: f"{d.year}.{md}", 0: md}.get(style.ylen, f"{d:%y}.{md}")
+    ds = f"{d.year}.{md}" if style.ylen == 4 else f"{d:%y}.{md}"     # 연도 없이 적었어도 연도를 붙인다
     if style.dot:
         ds += "."
     s = f"{doc.seq}{' ' if style.space else ''}({ds})"
@@ -194,6 +199,33 @@ def _swap_period(desc: str, old_title: str, new_title: str) -> str:
     return re.sub(rf"(?<!\d){a[1]}{unit}", rf"{b[1]}\1", desc, count=1)
 
 
+ACTION_WORDS = ("결과", "보고", "실시", "시행", "안내문", "안내", "홍보", "게시", "계획", "수립", "통보", "요청",
+                "제출", "완료", "알림", "공고", "및", "의", "에", "대한", "따른", "위한")
+
+
+def subject_core(title: str) -> str:
+    """제목에서 하는 일(결과·보고·홍보…)과 기간(상반기·N분기·N월·연도)을 뺀 주제 글자: '지하저수조청소'."""
+    t = re.sub(r"\(.*?\)|\[.*?\]|「|」|『|』", " ", title or "")
+    t = re.sub(r"(상|하)\s*반기|\d+\s*(?:/\s*4\s*)?분기|\d+\s*차|\d{2,4}\s*년도?|\d{1,2}\s*월", " ", t)
+    for w in sorted(ACTION_WORDS, key=len, reverse=True):
+        t = t.replace(w, " ")
+    return re.sub(r"[\s\W\d_]+", "", t)
+
+
+def _bigrams(s: str) -> set:
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def clean_supplement(text: str) -> str:
+    """손으로 적은 근거 다듬기: 줄 바뀜으로 끊긴 '(26.04.06)'·'-739(…)'를 앞 줄에 붙이고,
+    '26..07.14'·'2026.006.09' 같은 날짜 오타를 고친다."""
+    t = (text or "").replace("\r", "")
+    t = re.sub(r"\n[ \t]*(?=[(\-])", "", t)
+    t = re.sub(r"(?<=\d)\.{2,}(?=\d)", ".", t)
+    t = re.sub(r"(?<=\d\.)0+(?=\d{2}(?!\d))", "", t)        # '006' → '06'
+    return t
+
+
 def _shift_years(text: str, delta: int) -> str:
     """'2024년' 같은 연도 글자를 delta해 옮긴다(참고 평가년도 → 고른 해)."""
     if not text or not delta:
@@ -213,13 +245,28 @@ def _related(desc: str, title: str) -> bool:
 
 
 def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
-                follow_offset: bool = False, item_text: str = "", with_title: bool = True) -> Result:
+                follow_offset: bool = False, item_text: str = "", with_title: bool = True,
+                promos: bool = True, style_as: Ref | None = None) -> Result:
     """참고 초안의 근거 → 고른 해(cur_year) 근거. ledgers = {연도: [Doc, …]} (참고 문서의 해들과 고른 해).
 
     follow_offset=True면 참고 문서가 평가년도 다음 해 문서일 때(1~2월분 등) 그만큼 뒤의 해 대장에서 찾는다.
     찾는 순서: 제목 열쇠가 같은 문서 → 아주 비슷한 제목 → 근거에 적은 설명이 제목에 든 문서 →
     평가항목 이름(item_text)이 제목에 든 문서. 참고 근거에 이미 있던 그 해 문서는 원래 적은 글자 그대로 둔다.
-    참고 근거의 문서 중 고른 해에 같은 종류(분기·월 같은 기간까지)가 없는 것은 Result.lacking에 모은다."""
+    참고 근거의 문서 중 고른 해에 같은 종류(분기·월 같은 기간까지)가 없는 것은 Result.lacking에 모은다.
+
+    style_as를 주면 '보탤 근거'(올해 손으로 적은 평가표 등)로 읽는다: 적은 모양 대신 style_as의 모양 +
+    공문 제목으로 한 줄에 하나씩 쓰고, 고른 해에 같은 종류가 없는 지난 문서는 적힌 대로(연도 붙여) 두며,
+    찾지 못한 번호·'확인 필요'·날짜를 잘못 적은 줄은 적지 않는다."""
+    supp = style_as is not None
+    if supp:
+        with_title = True
+        prev_basis = clean_supplement(prev_basis)
+
+    def sty(gr, desc):
+        if supp:
+            return Ref(**{**style_as.__dict__, "raw": gr.raw, "seq": gr.seq, "date": gr.date, "desc": desc,
+                          "mon": "", "suf": ""})
+        return Ref(**{**gr.__dict__, "desc": desc})
     refs = parse_refs(prev_basis, prev_year)
     pad_any = any(r.pad for r in refs)          # 한 칸이라도 25.01.21처럼 썼으면 모두 두 자리로
     if not refs and not NUM_LIST_RE.search(prev_basis or ""):
@@ -313,6 +360,42 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
             return []
         return groups[max(groups, key=lambda k: (_ratio(core, k), len(groups[k])))]
 
+    def promo_for(main):
+        """본 문서와 같은 일로 홍보한 공문: 제목에 '홍보'가 있고, 주제 글자(홍보·결과·보고 같은 말을 뺀 것)가
+        본 문서와 많이 겹치며, 본 문서 석 달 전부터 한 달 뒤 사이에 낸 것. 본 문서가 홍보·게시 공문이면 없음."""
+        if not main.date or re.search(r"홍보|게시", main.title):
+            return []
+        a = _bigrams(subject_core(main.title))
+        if len(a) < 3:
+            return []
+        t = period(main.title)
+        out = []
+        for d in ledgers.get(main.date.year, []):
+            if d.seq == main.seq or not d.date or "홍보" not in d.title:
+                continue
+            if not (-90 <= (d.date - main.date).days <= 30):
+                continue
+            pt = period(d.title)
+            if t and pt and t[0] == pt[0] and t != pt:          # 상반기 일을 하반기 홍보와 엮지 않게
+                continue
+            b = _bigrams(subject_core(d.title))
+            common = len(a & b)
+            if b and common >= 3 and common >= 0.75 * min(len(a), len(b)):
+                out.append(d)
+        return sorted(out, key=lambda d: (d.date, d.seq))
+
+    def desc_more(year, r, gdoc):
+        """근거에 적은 설명이 참고 공문 제목보다 넓은 주제일 때('전기안전관리자' ← '전기안전관리기술교육 수료 보고'):
+        고른 해 대장에서 제목에 그 설명이 든 다른 공문('전기안전관리자 선해임 변경 신고')도 함께 적는다.
+        기간을 적은 설명, 참고 제목에 설명이 그대로 든 것, 받은 안내·요청 공문은 빼고 본다."""
+        if not r.desc or period(r.desc):
+            return []
+        core = draft_key(r.desc)
+        if len(core) < 5 or core in gdoc.key:
+            return []
+        return [d for d in ledgers.get(year, []) if d.date and core in d.key
+                and not re.search(r"안내|알림|요청|공고|제출|협조", d.title)]
+
     def _num_list_line(line):
         """'광주양림2-239,1435,688'처럼 날짜 없이 번호만 적은 줄: 참고 평가년도 대장에서 번호로 제목을 찾아
         같은 종류의 고른 해 문서 번호로 바꾼다. 번호 대부분을 못 찾으면 None(그대로 둠)."""
@@ -335,6 +418,9 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
                 used.add((year, d.seq))
                 new_seqs.append(d)
         for t in lack:
+            if supp:
+                res.sup_lacking.append(f"{t}({year}년 대장에 같은 공문 없음)")
+                continue
             res.lacking.append(t)
             res.missing.append(f"{year}년 대장에 '{t}' 같은 문서가 없음")
         if not new_seqs:
@@ -369,7 +455,7 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
             if doc:
                 key_lines.setdefault(doc.key, set()).add(li)
                 key_refs.setdefault(doc.key, []).append((r, doc))
-    raw_of = {(doc.date.year, doc.seq): r for (_li, r, doc) in resolved if doc and doc.date}
+    raw_of = {} if supp else {(doc.date.year, doc.seq): r for (_li, r, doc) in resolved if doc and doc.date}
 
     done_keys, out_lines = set(), []
     for li, line in enumerate(lines):
@@ -378,15 +464,23 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
             listed = _num_list_line(line)
             if listed is not None:
                 out_lines.append(listed)
+            elif supp and re.search(r"\d+\s*\(", line):           # 날짜를 잘못 적은 번호 줄은 빼고 이유를 남긴다
+                res.sup_lacking.append(f"'{line.strip()}'(날짜를 잘못 적어 읽지 못함)")
             elif line.strip():
                 out_lines.append(line.strip())
             continue
         lead = REF_RE.sub("\0", line).split("\0")[0].strip(" ,/")    # 번호 앞 글자(예: '해약처리현황 캡처')
         lead = _shift_years(lead, cur_year - prev_year)              # '2024년 하반기' → '2025년 하반기'
+        if supp:
+            lead = ""                                                # 보탤 근거는 공문 제목으로 적는다
         sep = _sep(REF_RE.sub("X", line))
         entries, multiline, unknown = [], False, []
+        anchor: dict = {}           # (날짜, 번호) → 묶음의 본 문서(관련 공문을 한데 모을 때)
         for r, doc in mine:
             if not doc:
+                if supp:
+                    res.sup_lacking.append(f"{r.raw.strip()}({r.date.year}년 대장에서 이 번호·날짜의 공문을 찾지 못함)")
+                    continue
                 unknown.append(f"{r.raw}{(' ' + r.desc) if r.desc else ''}(확인 필요)")
                 res.missing.append(f"대장에서 {r.seq}번({r.date:%m.%d}) 문서를 찾지 못함")
                 continue
@@ -414,11 +508,22 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
                     desc_docs = fresh(by_desc(year, r.desc, doc.key))
                     if len(desc_docs) > len(news):
                         news = desc_docs
+            if supp and not news:
+                if doc.date and doc.date.year < prev_year:
+                    news = [doc]    # 작성분에 일부러 적은 지난해 문서(용역계약·격년 검사 등)는 적힌 대로
+                elif same_kind(year, doc.key) or same_period(year, doc):
+                    continue        # 같은 종류가 이미 다른 줄에 들어감 — 없는 것이 아니다
+                else:
+                    res.sup_lacking.append(f"{doc.title}({year}년 대장에 같은 공문 없음)")
+                    continue
             # 작년에는 있었는데 올해 없는 것: 같은 종류가 하나도 없거나, 그 분기·월만 없는 경우
             got = {period(d.title) for d in news}
             for gr, gdoc in group:
                 t = period(gdoc.title)
-                if not news or (t and t not in got and len(group) > 1):
+                if supp:
+                    if t and t not in got and len(group) > 1:
+                        res.sup_lacking.append(f"{gdoc.title}({year}년 대장에 그 기간 공문 없음)")
+                elif not news or (t and t not in got and len(group) > 1):
                     lack_cands.append((gr.desc or gdoc.title, gdoc, year))     # 끝에서 항목 전체로 다시 본다
             if not news:
                 notes.append(doc.title)
@@ -432,11 +537,39 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
                 gr, gdoc = by_period.get(period(d.title), (r, doc))
                 desc = d.title if with_title else _shift_years(_swap_period(gr.desc, gdoc.title, d.title),
                                                               cur_year - prev_year)   # 공문 제목 그대로
-                style = Ref(**{**gr.__dict__, "desc": desc})
-                entries.append((d, style))
-        entries.sort(key=lambda e: (e[0].date, e[0].seq))
+                entries.append((d, sty(gr, desc)))
+            if with_title and promos:
+                # 설명이 가리키는 같은 주제의 다른 공문(예: '전기안전관리자 선해임 변경 신고')도 함께
+                head = news[0]
+                for d in desc_more(year, r, doc):
+                    if (year, d.seq) in used:
+                        continue
+                    used.add((year, d.seq))
+                    all_news.append(d)
+                    entries.append((d, Ref(**{**sty(r, d.title).__dict__, "mon": "", "suf": ""})))
+                    anchor[(d.date, d.seq)] = (head.date, head.seq)
+        # 같은 일로 홍보한 공문(예: '지하저수조 청소 홍보 실시 보고')은 본 문서와 붙여서
+        if with_title and promos:
+            extra = []
+            for d, style in entries:
+                for p in promo_for(d):
+                    if (p.date.year, p.seq) in used:
+                        continue
+                    used.add((p.date.year, p.seq))
+                    all_news.append(p)
+                    extra.append((p, Ref(**{**style.__dict__, "desc": p.title, "mon": "", "suf": ""})))
+                    anchor[(p.date, p.seq)] = anchor.get((d.date, d.seq), (d.date, d.seq))
+            entries += extra
+        # 관련 공문끼리 붙여 두고, 묶음 안에서는 먼저 낸 공문이 위로(홍보 → 청소 결과)
+        def group_of(d):
+            return anchor.get((d.date, d.seq), (d.date, d.seq))
+        first = {}
+        for d, _s in entries:
+            g = group_of(d)
+            first[g] = min(first.get(g, d.date), d.date)
+        entries.sort(key=lambda e: (first[group_of(e[0])], group_of(e[0]), e[0].date, e[0].seq))
         res.found += len(entries)
-        pre_ref = next((r for r, _doc in mine if r.pre), None)
+        pre_ref = None if supp else next((r for r, _doc in mine if r.pre), None)
         texts = []
         for i, (d, r) in enumerate(entries):
             with_pre = multiline or i == 0                  # 한 줄에 이어 쓸 때 앞글자는 맨 앞에만
@@ -444,6 +577,8 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
             same = raw_of.get((d.date.year, d.seq)) if d.date else None
             if same is not None and not follow_offset:      # 참고 근거에 이미 있던 문서: 적은 그대로
                 raw = same.raw
+                if not same.ylen:                           # 연도 없이 적은 날짜에 연도를 붙인다
+                    raw = re.sub(r"\(\s*", lambda m: f"{m.group(0)}{d.date:%y}.", raw, count=1)
                 if same.pre and not with_pre:
                     raw = raw[raw.index(same.pre) + len(same.pre):].lstrip(" -_")
                 elif style.pre and with_pre and not same.pre:
@@ -457,7 +592,7 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
             out_lines.append(f"{lead} {body}".strip() if lead else body)
         elif lead and not re.fullmatch(r"[가-힣A-Za-z0-9]+\s*[-_]?", lead):
             out_lines.append(lead)
-    if notes and not res.found:                 # 하나도 못 찾았을 때만 근거 칸에 표시
+    if notes and not res.found and not supp:    # 하나도 못 찾았을 때만 근거 칸에 표시
         out_lines.append(f"※ {cur_year}년 대장에서 확인 필요: " + ", ".join(dict.fromkeys(notes)))
     for label, gdoc, year in lack_cands:
         # 다른 줄에서 같은 기간(분기·월)의 비슷한 문서를 이미 찾았으면 없는 것이 아니다
@@ -465,8 +600,10 @@ def draft_basis(prev_basis: str, prev_year: int, cur_year: int, ledgers: dict,
         if t and any(period(d.title) == t and _ratio(gdoc.key, d.key) >= 0.6 for d in all_news):
             continue
         res.lacking.append(label)
+        res.lack_keys[label] = gdoc.key
         res.missing.append(f"{year}년 대장에 '{gdoc.title}' 같은 문서가 없음")
     res.lacking = list(dict.fromkeys(res.lacking))
+    res.docs = all_news
     res.basis = "\n".join(x for x in out_lines if x)
     return res
 
@@ -497,13 +634,82 @@ def lack_reason(lacking: list) -> str:
     return LACK_PREFIX + ", ".join(dict.fromkeys(lacking)) if lacking else ""
 
 
+def _line_ids(line: str, year: int) -> set:
+    """근거 한 줄에 적힌 문서들: {(연도, 번호)}. 날짜에 연도가 없으면 year."""
+    ids = set()
+    for m in REF_RE.finditer(line or ""):
+        y = m["y"]
+        ids.add(((int(y) + 2000 if len(y) == 2 else int(y)) if y else year, int(m["seq"])))
+    return ids
+
+
+def merge_basis(a: str, b: str, year: int) -> str:
+    """초안 근거(a)에 보탤 근거(b)를 합친다. 순서는 b(손으로 적은 순서)를 따르고, a에만 있는 줄은
+    a에서 그 앞에 있던 줄 뒤에 둔다. 같은 문서·같은 글은 한 번만."""
+    A = [x for x in (a or "").split("\n") if x.strip()]
+    B = [x for x in (b or "").split("\n") if x.strip()]
+    a_ids = [_line_ids(x, year) for x in A]
+    def tkey(x):                    # '화면캡쳐'·'화면 캡처'는 같은 글
+        return similar_key(re.sub(r"캡쳐|켭쳐|켑쳐", "캡처", x))
+    a_txt = [tkey(x) if not a_ids[i] else "" for i, x in enumerate(A)]
+    seen = set().union(*a_ids) if a_ids else set()
+    out, ai = [], 0
+    for line in B:
+        ids = _line_ids(line, year)
+        if ids:
+            hit = next((i for i, s in enumerate(a_ids) if s & ids), None)
+        else:
+            k = tkey(line)
+            hit = next((i for i, t in enumerate(a_txt) if t and k and (t in k or k in t)), None)
+        if hit is not None:
+            if hit >= ai:
+                out += A[ai:hit] + ([A[hit]] if ids else [line])    # 같은 글이면 손으로 적은 쪽
+                ai = hit + 1
+            continue
+        if ids and ids <= seen:
+            continue
+        out.append(line)
+        seen |= ids
+    return "\n".join(out + A[ai:])
+
+
+def _style_of(basis: str, year: int) -> Ref | None:
+    """근거에 적은 번호 모양(앞글자·띄움·두 자리 날짜): 앞글자가 있는 첫 번호, 없으면 첫 번호."""
+    refs = parse_refs(basis, year)
+    if not refs:
+        return None
+    r = next((x for x in refs if x.pre), refs[0])
+    return Ref(**{**r.__dict__, "desc": "", "mon": "", "suf": "", "pad": any(x.pad for x in refs)})
+
+
+def _common_style(items, year: int) -> Ref:
+    """평가표 전체에서 가장 많이 쓴 번호 모양(앞글자 있는 것 먼저)."""
+    from collections import Counter
+    c = Counter()
+    for it in items:
+        s = _style_of(it.basis, year)
+        if s:
+            c[(bool(s.pre), s.pre, s.presep, s.space, s.pad, s.dot, s.ylen)] += 1
+    base = Ref(raw="", seq=0, date=dt.date(year, 1, 1))
+    if not c:
+        return base
+    _has, pre, presep, space, pad, dot, ylen = max(c, key=lambda k: (k[0], c[k]))
+    return Ref(**{**base.__dict__, "pre": pre, "presep": presep, "space": space, "pad": pad, "dot": dot, "ylen": ylen})
+
+
 def make_draft(prev_items, cur_items, prev_year: int, cur_year: int, ledgers: dict,
-               only=None, with_title: bool = True) -> list[tuple]:
+               only=None, with_title: bool = True, promos: bool = True, extras=()) -> list[tuple]:
     """초안 항목(cur_items)의 근거를 채운다. only(항목→bool)로 범위를 줄일 수 있다.
     참고 근거에 있던 문서가 고른 해에 없으면 항목의 reason(점수 불인정 사유)과 flag(노란 표시)를 단다.
+    extras = [(항목들, 평가년도)]: 보탤 근거(올해 손으로 적은 평가표 등) — 그 문서들과 같은 종류도 함께 적고,
+    순서는 손으로 적은 순서를 따른다.
     돌려주는 값: [(항목, Result)] — 근거나 사유를 바꾼 항목만."""
     prev_by = {_match_key(p): p for p in prev_items}
     prev_by_text = {similar_key(p.text): p for p in prev_items}
+    extra_by = [({_match_key(s): s for s in ex[0]}, {similar_key(s.text): s for s in ex[0]}, ex[1],
+                 ex[2] if len(ex) > 2 else "올해")
+                for ex in extras]
+    default_style = _common_style(prev_items, prev_year) if extras else None
     out = []
     for it in cur_items:
         if only and not only(it):
@@ -511,21 +717,58 @@ def make_draft(prev_items, cur_items, prev_year: int, cur_year: int, ledgers: di
         p = prev_by.get(_match_key(it))
         if p is None or similar_key(p.text) != similar_key(it.text):
             p = prev_by_text.get(similar_key(it.text), p)
-        if p is None or not p.basis.strip():
+        sups = []
+        for by, by_text, y, label in extra_by:
+            s = by.get(_match_key(it))
+            if s is None or similar_key(s.text) != similar_key(it.text):
+                s = by_text.get(similar_key(it.text), s)
+            if s is not None and s.basis.strip():
+                sups.append((s, y, label))
+        has_p = p is not None and bool(p.basis.strip())
+        if not has_p and not sups:
             continue
-        res = draft_basis(p.basis, prev_year, cur_year, ledgers, item_text=it.text, with_title=with_title)
-        reason = lack_reason(res.lacking)
+        if has_p:
+            res = draft_basis(p.basis, prev_year, cur_year, ledgers, item_text=it.text, with_title=with_title,
+                              promos=promos)
+        else:
+            res = Result(basis="")
+        from_prev = set(res.basis.split("\n")) if has_p else set()     # 작년 근거에서 옮겨 온 줄
+        sup_reasons = []
+        sup_miss = []
+        for s, y, label in sups:
+            st = (_style_of(p.basis, prev_year) if has_p else None) or default_style
+            r2 = draft_basis(s.basis, y, cur_year, ledgers, item_text=it.text, promos=promos, style_as=st)
+            res.basis = merge_basis(res.basis, r2.basis, cur_year)
+            res.found += r2.found
+            res.missing += r2.missing
+            got = [d.key for d in r2.docs]           # 손으로 적은 근거에 그 문서(지난해 것이라도)가 있으면 없는 게 아님
+            keep = [x for x in res.lacking
+                    if not any(_ratio(res.lack_keys.get(x, draft_key(x)), k) >= 0.6 for k in got)]
+            res.lacking = list(dict.fromkeys(keep + r2.lacking))
+            if r2.sup_lacking:
+                res.sup_lacking += r2.sup_lacking
+                sup_miss += [f"{MISS_MARK}{label} 작성분에 있고 올해 없음: {x}" for x in dict.fromkeys(r2.sup_lacking)]
+        # 없는 문서는 점수 불인정 사유 칸이 아니라 평가 근거 칸 맨 아래에 '✗ …' 줄로(엑셀에서 빨간 글씨)
         old_reason = getattr(it, "reason", "") or ""
-        mine = "\n".join(x for x in old_reason.split("\n") if not x.startswith(LACK_PREFIX)).strip()
-        new_reason = "\n".join(x for x in (mine, reason) if x)          # 직접 적은 사유는 살린다
-        flag = bool(res.lacking)
-        changed = (res.basis and res.basis != it.basis) or new_reason != old_reason or flag != getattr(it, "flag", False)
-        if res.basis:
-            it.basis = res.basis
-        it.reason, it.flag = new_reason, flag
+        new_reason = "\n".join(x for x in old_reason.split("\n")       # 예전 방식으로 적은 사유는 지우고,
+                               if not x.startswith(LACK_PREFIX) and SUP_LACK_MARK not in x).strip()   # 직접 적은 사유는 살린다
+        miss = [f"{MISS_MARK}작년에 있고 올해 없음: {x}" for x in dict.fromkeys(res.lacking)] + sup_miss
+        body = res.basis or strip_miss(getattr(it, "basis", "") or "")
+        new_basis = "\n".join(x for x in [body] + miss if x)
+        added = [x for x in body.split("\n") if x and x not in from_prev] if res.basis else list(getattr(it, "added", []))
+        flag = bool(miss)
+        changed = (new_basis and new_basis != it.basis) or new_reason != old_reason or flag != getattr(it, "flag", False)
+        if new_basis:
+            it.basis = new_basis
+        it.reason, it.flag, it.added = new_reason, flag, added
         if changed:
             out.append((it, res))
     return out
+
+
+def strip_miss(basis: str) -> str:
+    """평가 근거에서 '✗ …'(없는 문서) 줄을 뺀다."""
+    return "\n".join(x for x in (basis or "").split("\n") if not x.startswith(MISS_MARK)).strip()
 
 
 def docs_to_json(docs: list[Doc]) -> list:

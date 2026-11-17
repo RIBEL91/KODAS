@@ -203,9 +203,12 @@ class ChoiceBox(ttk.Frame):
     def __init__(self, parent, options: list[str], suffix: str = "", command=None):
         super().__init__(parent)
         self.vars = []
+        if not options:
+            ttk.Label(self, text="고를 것이 없습니다 — [단지기본정보]의 평형 칸을 채워 주세요",
+                      foreground="#b45309").pack(side="left")
         for opt in options:
             v = tk.BooleanVar(value=False)
-            ttk.Checkbutton(self, text=f"{opt}{suffix}", variable=v,
+            ttk.Checkbutton(self, text=dtpl.choice_label(opt, suffix), variable=v,
                             command=command).pack(side="left", padx=(0, 10))
             self.vars.append((opt, v))
 
@@ -376,6 +379,9 @@ class App:
         self.option_vars: dict[str, tk.BooleanVar] = {}
         self.none_checked: dict[str, bool] = {}          # 서식별 '없음표시'(예: 소명대상 없음) 체크 (이번 실행 동안)
         self.area = "임대"                              # 시작 화면에서 고른 분야
+        self.screen: str | None = None                  # 지금 보이는 화면(home·picker·write·complex·settings·history)
+        self.back_stack: list[str] = []                 # 지나온 화면 → [뒤로가기]는 직전 화면으로
+        self.going_back = False
 
         root.title(f"KODAS — 공문 자동작성 시스템 v{VERSION}")
         try:
@@ -436,7 +442,7 @@ class App:
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
                      ("대장 문서 받기", "download", "green", self._collect_docs),
                      ("사용 방법", "help", "violet", self._show_help),
-                     ("품질평가서 작성", "report", "teal", self._quality_eval))
+                     ("품질평가서 작성", "report", "teal", self._quality_menu))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
                                        items=lambda: list(enumerate(self.templates)),
@@ -483,6 +489,12 @@ class App:
         return ui_kit.read_history(paths.sub_dir("logs"))
 
     def _nav(self, key: str):
+        """화면을 key로 바꿨다고 알린다: 왼쪽 메뉴 표시, 그리고 [뒤로가기]용으로 직전 화면을 기억한다."""
+        prev = self.screen
+        if prev and prev != key and not self.going_back:
+            self.back_stack.append(prev)
+            del self.back_stack[:-30]
+        self.screen = key
         if getattr(self, "sidebar", None) is not None:
             self.sidebar.set_active(key)
         if key == "write":
@@ -618,7 +630,7 @@ class App:
         f.add_command(label="서식 다시 읽기", command=self._load_templates)
         f.add_command(label="홈넷 대장 문서 받기 (PDF·첨부·서식)…", command=self._collect_docs)
         f.add_command(label="받은 대장 문서 폴더 열기", command=lambda: os.startfile(paths.sub_dir("수집")))
-        f.add_command(label="품질평가서 작성 (평가표 점수·근거, 증빙 폴더)…", command=self._quality_eval)
+        f.add_command(label="품질평가서 작성…", command=self._quality_menu)
         f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
@@ -664,7 +676,7 @@ class App:
         return b
 
     def _show_complex(self):
-        """단지기본정보(감춰 둔 ① 탭: 관리소·단지·평형·업체·계정·결재정보). [뒤로가기]나 [저장하고 다음]으로 돌아온다."""
+        """단지기본정보(감춰 둔 ① 탭: 관리소·단지·평형·업체·계정·결재정보). [뒤로가기]로 돌아온다."""
         self._hide_overlays()
         self.nb.select(0)
         self.header_title.config(text="단지기본정보")
@@ -678,7 +690,20 @@ class App:
         self._nav("settings")
 
     def _go_back(self):
-        """한 단계 뒤로: 단지기본정보·환경 설정 화면이면 공문 작성으로, 공문 작성이면 서식 고르기 화면으로."""
+        """한 단계 뒤로: 직전에 열려 있던 화면(처음 화면·서식 고르기·공문 작성·단지기본정보 등)으로 간다.
+        지나온 화면이 없으면 예전처럼 단지기본정보·환경 설정 → 공문 작성, 공문 작성 → 서식 고르기."""
+        screens = {"home": self._go_home, "picker": self._show_picker, "write": self._show_write,
+                   "complex": self._show_complex, "settings": self._show_settings, "history": self._show_history}
+        while self.back_stack:
+            key = self.back_stack.pop()
+            if key == self.screen or key not in screens or (key == "write" and self.current is None):
+                continue
+            self.going_back = True
+            try:
+                screens[key]()
+            finally:
+                self.going_back = False
+            return
         if self.nb.index("current") in (0, 2):
             if self.current is None:
                 self._go_home()
@@ -799,7 +824,7 @@ class App:
 
         nav = ttk.Frame(tab)
         nav.pack(side="bottom", fill="x", padx=10, pady=8)
-        self._orange_button(nav, "저장하고 다음  ▶", self._next_from_account).pack(side="right")
+        self._orange_button(nav, "저장", self._save_account).pack(side="right")
         ttk.Button(nav, text="단지 항목 처음 값으로", command=self._reset_complex).pack(side="right", padx=8)
         ttk.Label(nav, foreground="#555", text="여기 값은 모든 공문의 빈칸({관리소}·{단지:관리소명} 등)에 "
                                                "자동으로 들어갑니다.").pack(side="left")
@@ -807,7 +832,7 @@ class App:
         body = self._scroll_area(tab)
 
         info = ttk.LabelFrame(body, text="우리 관리소·단지 (처음 한 번만 입력 — 공문의 빈칸에 자동으로 들어갑니다)")
-        info.pack(fill="x", padx=10, pady=(8, 4))
+        info.pack(fill="x", padx=10, pady=4)
         self.info_entries = {}
         r = 0
         for key, label, hint in INFO_FIELDS:
@@ -839,8 +864,13 @@ class App:
             self.complex_entries[key] = self._row(info, r, label, cx.get(key, ""), hint=hint)
             r += 1
 
-        types = ttk.LabelFrame(body, text="평형(계약면적 ㎡)과 세대수")
+        types = ttk.LabelFrame(body, text="평형(전용면적 ㎡)과 세대수")
         types.pack(fill="x", padx=10, pady=4)
+        auto = ttk.Frame(types)        # 평형·세대수 옆: WISE 임대조건에서 읽어 채우기
+        auto.grid(row=0, column=9, rowspan=3, sticky="nw", padx=(16, 8), pady=3)
+        self._orange_button(auto, "면적 자동으로 작성하기", self._open_onetouch).pack(anchor="w")
+        ttk.Label(auto, foreground="#777", justify="left",
+                  text="WISE 임대조건에서\n평형·세대수를 읽어 채웁니다").pack(anchor="w", pady=(4, 0))
         for i in range(1, complex_info.MAX_TYPES + 1):
             rr, cc = (i - 1) // 3, ((i - 1) % 3) * 3
             ttk.Label(types, text=f"평형{i}").grid(row=rr, column=cc, padx=(8, 2), pady=3)
@@ -858,14 +888,9 @@ class App:
         for i, (key, label, _, hint) in enumerate(complex_info.ACCOUNT):
             self.complex_entries[key] = self._row(accf, i, label, cx.get(key, ""), hint=hint)
 
-        ex = ttk.LabelFrame(body, text="직접 추가하는 항목 (한 줄에 '이름=값', 서식에서는 {단지:이름})")
-        ex.pack(fill="x", padx=10, pady=4)
-        self.complex_extra = tk.Text(ex, height=3, width=60, font=FONT, **TEXT_OPTS)
-        self.complex_extra.insert("1.0", cx.get("추가항목", ""))
-        self.complex_extra.pack(fill="x", padx=8, pady=6)
 
         acc = ttk.LabelFrame(body, text="계정 (홈넷 로그인에 씁니다)")
-        acc.pack(fill="x", padx=10, pady=4)
+        acc.pack(fill="x", padx=10, pady=(8, 4), before=info)     # 계정·결재정보는 맨 위
         self.homnet_id = self._row(acc, 0, "홈넷 아이디(사번)", c.get("homnet_id", ""))
         self.homnet_pw = self._row(acc, 1, "홈넷 비밀번호", c.get("homnet_pw", ""), secret=True)
         self.vpn_id = self._row(acc, 2, "VPN 아이디", c.get("vpn_id", ""),
@@ -882,7 +907,7 @@ class App:
         ttk.Button(st, text="연결 상태 확인", command=self._check_tunnel).pack(side="left", padx=10)
 
         doc = ttk.LabelFrame(body, text="결재정보 기본값")
-        doc.pack(fill="x", padx=10, pady=(4, 10))
+        doc.pack(fill="x", padx=10, pady=4, before=info)
         ttk.Label(doc, text="공개여부").grid(row=0, column=0, sticky="e", padx=8, pady=3)
         self.public_type = ttk.Combobox(doc, values=homnet_draft.PUBLIC_TYPES, state="readonly", width=10)
         self.public_type.set(c.get("public_type", "비공개"))
@@ -902,6 +927,10 @@ class App:
         self.binder.grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
         ttk.Label(doc, text="비우면 홈넷 기본값 그대로", foreground="#777").grid(row=2, column=4, sticky="w")
 
+    def _open_onetouch(self):
+        import onetouch_view
+        onetouch_view.open_dialog(self)
+
     def _show_derived(self):
         name = self.info_entries["단지명"].get().strip()
         self.derived_label.config(
@@ -911,7 +940,6 @@ class App:
     def _complex_values(self) -> dict:
         """화면의 단지 항목 + 단지명·공급유형에서 만든 값 → settings.json의 complex_info."""
         out = {k: e.get().strip() for k, e in self.complex_entries.items()}
-        out["추가항목"] = self.complex_extra.get("1.0", "end-1c")
         info = self._info_values()
         name = info.get("단지명", "")
         out["단지명"] = name
@@ -928,14 +956,12 @@ class App:
         for k, e in self.complex_entries.items():
             e.delete(0, "end")
             e.insert(0, d.get(k, ""))
-        self.complex_extra.delete("1.0", "end")
 
-    def _next_from_account(self):
+    def _save_account(self):
+        """[저장]: 저장만 하고 화면은 그대로 둔다."""
         self._save_settings()
         self.log("✅ 단지기본정보를 저장했습니다. 모든 서식에 자동으로 들어갑니다.")
         self._refresh()
-        self.nb.select(1)
-        self._nav("write")
 
     def _check_tunnel(self):
         import session
@@ -972,6 +998,10 @@ class App:
                   "quality_xlsx": self.cfg.get("quality_xlsx", ""),
                   "quality_prev_xlsx": self.cfg.get("quality_prev_xlsx", ""),
                   "quality_ledger_year": self.cfg.get("quality_ledger_year"),
+                  "quality_my_items": self.cfg.get("quality_my_items", {}),
+                  "wise_region": self.cfg.get("wise_region", ""),        # 원터치 자동작성의 WISE 지역본부   # 담당자별 [내 항목 고르기]
+                  "quality_extra_xlsx_list": self.cfg.get("quality_extra_xlsx_list")
+                  or ([self.cfg["quality_extra_xlsx"]] if self.cfg.get("quality_extra_xlsx") else []),   # 근거 보태기(최대 5개)
                   **self._info_values()}
         try:
             settings_store.save(values, self.remember.get())
@@ -1367,8 +1397,8 @@ class App:
         if not keep:
             self.found = ("", {})
         fields = [fs for fs in fields if fs[0] not in self.auto_dates + self.found_labels]
-        for i, (label, style) in enumerate(fields):
-            rr, cc = r + i // 2, (i % 2) * 3
+        for i, (label, style) in enumerate(fields):     # 날짜 칸도 한 줄에 하나씩(이름 칸 아래 같은 열)
+            rr, cc = r + i, 0
             if label in KEY_DATES:
                 ttk.Label(f, text="* " + label, font=FONT_B, foreground="#c62828").grid(
                     row=rr, column=cc, sticky="e", padx=8, pady=4)
@@ -1386,7 +1416,7 @@ class App:
             if "기한" in label:
                 self._help(f"{label}: 작성일부터 2주 뒤 날짜가 미리 들어갑니다. ▼를 눌러 달력에서 바꿀 수 있습니다.")
             self.date_widgets[label] = de
-        r += (len(fields) + 1) // 2
+        r += len(fields)
         # {입력:항목} 수기 입력 칸(두 칸씩 한 줄)
         self.text_widgets = {}
         inputs = list(dict.fromkeys(x for d in docs for x in d.input_fields()))
@@ -2063,6 +2093,48 @@ class App:
             self.log(f"⚠️ 작성 이력 저장 실패: {ex}")
 
     # ================= 대장 문서 모으기 =================
+    def _quality_menu(self):
+        """[품질평가서 작성]: 품질평가 초안 작성 / 한글파일 작성 중 고른다."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("품질평가서 작성")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.configure(padx=26, pady=20)
+        ttk.Label(dlg, text="품질평가서 작성", font=(ui_kit.FONT, 14, "bold")).pack(anchor="w")
+        ttk.Label(dlg, text="무엇을 할지 골라 주세요.", foreground="#666").pack(anchor="w", pady=(2, 14))
+        row = ttk.Frame(dlg)
+        row.pack()
+
+        def card(title, sub, cmd, enabled=True):
+            box = tk.Frame(row, bg=ORANGE if enabled else "#c9c9c9", cursor="hand2" if enabled else "",
+                           padx=22, pady=16)
+            box.pack(side="left", padx=8, fill="y")
+            labels = [tk.Label(box, text=title, bg=box["bg"], fg="white", font=(ui_kit.FONT, 13, "bold")),
+                      tk.Label(box, text=sub, bg=box["bg"], fg="white", font=(ui_kit.FONT, 9), justify="left")]
+            for w in labels:
+                w.pack(anchor="w")
+            if not enabled:
+                return
+            def go(_e=None):
+                dlg.destroy()
+                cmd()
+            def hover(on):
+                for w in [box] + labels:
+                    w.config(bg=ACCENT if on else ORANGE)
+            for w in [box] + labels:
+                w.bind("<Button-1>", go)
+                w.bind("<Enter>", lambda _e: hover(True))
+                w.bind("<Leave>", lambda _e: hover(False))
+
+        card("품질평가 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안, 증빙 폴더", self._quality_eval)
+        card("한글파일 작성", "준비 중입니다", None, enabled=False)
+        ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(anchor="e", pady=(16, 0))
+        dlg.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dlg.winfo_reqwidth()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - dlg.winfo_reqheight()) // 3)
+        dlg.geometry(f"+{x}+{y}")
+        dlg.grab_set()
+
     def _quality_eval(self):
         """바로가기 [품질평가서 작성]: 평가표 엑셀 점수·근거 입력과 항목별 증빙 폴더."""
         import quality_view
@@ -2294,7 +2366,7 @@ class App:
         messagebox.showinfo("사용 방법", (
             "처음 한 번\n"
             "  왼쪽 메뉴 [단지기본정보]에 관리소·단지 정보(평형·업체 포함)와 홈넷 계정(밖에서는 VPN 계정도)을\n"
-            "  넣고 [저장하고 다음].\n\n"
+            "  넣고 [저장].\n\n"
             "공문 쓸 때마다\n"
             "  1. 왼쪽 메뉴 [서식 고르기]에서 서식을 고릅니다(🔍로 검색 가능).\n"
             "  2. 받는 분 이름과 날짜를 넣습니다. 빨간 * 표시는 꼭 넣어야 하는 칸입니다.\n"
@@ -2376,7 +2448,8 @@ class App:
             "  {입력:차수} — 직접 적는 칸   {숫자:수량=10} — 숫자(처음 값 10)   {금액:청구액} — 금○원(금…원)\n"
             "  {계산:금액=수량*단가} — 다른 칸으로 계산   {단지:관리소명} — 단지기본정보의 값\n"
             "  {선택:형별=36|46|51|59} — 체크해서 고르는 칸(여러 개 → '36, 51')   "
-            "표 줄의 {선택값:형별} — 고른 것마다 그 줄을 하나씩\n"
+            "표 줄의 {선택값:형별} — 고른 것마다 그 줄을 하나씩   "
+            "{선택:형별=단지:평형|형} — 단지기본정보 평형에서 고르기(|형 51 · |면적 51.93 · |형별 51형(전용면적 51.93㎡))\n"
             "  머리말 '분야: 시설' → 시작 화면 분야,  '주기: 매월'·'주기: 매주' → 매월·매주 작성 묶음\n\n"
             "표\n"
             "  | 구분 | 내용 |   ← 첫 줄은 머리글\n"
