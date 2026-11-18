@@ -26,7 +26,7 @@ def test_auto_date_rule():
     assert rule({"갱신월": dt.date(2027, 1, 1)}, today) == dt.date(2026, 11, 1)
     assert gui.auto_date_rule("안내문시행일", {})({}, today) == today
     assert gui.auto_date_rule("제출기한", {}) is None
-    assert gui.default_date("제출기한", today) == dt.date(2026, 11, 8)
+    assert gui.default_date("제출기한", today) == dt.date(2026, 11, 6)   # 근무일 10일 뒤
 
 
 def test_saved_month():

@@ -1,7 +1,7 @@
 """품질평가서 작성 창.
 
 - 왼쪽: 올해 평가표(초안)의 항목 목록 — 번호·평가항목·배점·점수·증빙·평가 근거
-- 오른쪽 위: 고른 항목의 평가기준·준비서류·평가점수
+- 오른쪽 위: 고른 항목의 번호·평가항목(평가기준·준비서류·평가 근거·평가점수 칸은 숨김)
 - 오른쪽 아래: [전년도 품질평가 초안] 엑셀과 [품질평가 초안 작성] 엑셀을 넣는 칸.
   [대장관리 참고해 초안 작성]을 누르면 전년도 근거의 문서들과 같은 종류의 올해 문서를
   홈넷 기록물등록대장에서 찾아 초안 엑셀의 평가 근거(I열)에 적는다(quality_draft).
@@ -299,12 +299,15 @@ class QualityDialog(tk.Toplevel):
         self.title_lbl.pack(anchor="w", fill="x")
         self.reason_lbl = ttk.Label(right, foreground="#b45309", wraplength=int(420 * self.k), justify="left")
         self.reason_lbl.pack(anchor="w", fill="x")
-        self.crit = self._ro_text(right, "평가기준", 4)
-        self.docs = self._ro_text(right, "준비서류 (점수 인정 기준)", 3)
-        self.basis_box = self._ro_text(right, "평가 근거", 3)     # 목록에서 잘리는 긴 근거를 한 줄씩 다 보여 준다
+        # 평가기준·준비서류·평가 근거·평가점수 칸은 화면에 보이지 않는다(2026-11-18 요청).
+        # 고른 항목 정보를 담는 데는 그대로 쓰도록 배치하지 않은 틀 안에 만들어 둔다.
+        hidden = ttk.Frame(right)
+        self.crit = self._ro_text(hidden, "평가기준", 4)
+        self.docs = self._ro_text(hidden, "준비서류 (점수 인정 기준)", 3)
+        self.basis_box = self._ro_text(hidden, "평가 근거", 3)     # 목록에서 잘리는 긴 근거를 한 줄씩 다 보여 준다
         self.basis_box.tag_configure("miss", foreground="#e00000")          # 작년에 있고 올해 없음(✗) — 엑셀 빨간 글씨
         self.basis_box.tag_configure("added", foreground="#c99700")         # 작년과 비교해 새로 들어감 — 엑셀 노란 글씨
-        sf = ttk.Frame(right)
+        sf = ttk.Frame(hidden)
         sf.pack(anchor="w", fill="x", pady=(8, 0))
         ttk.Label(sf, text="평가점수", font=(F, 10, "bold")).pack(side="left")
         self.score = tk.StringVar()

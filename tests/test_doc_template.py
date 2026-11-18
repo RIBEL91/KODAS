@@ -11,7 +11,7 @@ D = dt.date(2026, 11, 6)   # 금요일
 VALUES = {"이름": "홍길동", "주소": "101동 1001호", "관리소": "가나관리소",
           "단지명": "가나1단지", "담당자": "김담당", "전화번호": "031-000-0000", "세대수": "25",
           "문서링크": "주거복지실-2044(2026.09.03.)", "심사결과링크": "가나관리소-1700(2026. 9. 10.)",
-          "소명안내링크": "가나관리소-1701(2026. 9. 10.)"}
+          "소명안내링크": "가나관리소-1701(2026. 9. 10.)", "중복입주링크": "주거복지실-1737(2026.07.22.)"}
 
 
 def test_fmt_date():
@@ -109,7 +109,7 @@ def test_hwp_html_uses_para_marks_not_css_margins():
 def test_bundled_templates_all_render():
     items, errors = dtpl.load_all(paths.template_dir())
     assert not errors
-    assert len([t for t in items if t.file_name[:2].isdigit()]) == 28    # 임대 서식(오영철, 35번 예비입주자 모집 공고·34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
+    assert len([t for t in items if t.file_name[:2].isdigit()]) == 29    # 임대 서식(오영철, 36번 중복입주 결과 보고·35번 예비입주자 모집 공고·34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
     assert len([t for t in items if t.file_name.startswith(("월별", "주별"))]) == 64   # 관리업무 서식(ai3)
     import complex_info
     dtpl.set_complex(complex_info.resolve({}))
@@ -160,9 +160,10 @@ def test_options_header_and_folder(tmp_path):
     folder = paths.template_dir()
     t08 = next(x for x in dtpl.load_all(folder)[0] if x.file_name.startswith("08_"))
     opts, errors = dtpl.load_all(os.path.join(folder, dtpl.OPTION_DIR))
-    assert not errors and len(t08.options) == 5 and len(opts) == 6
+    assert not errors and len(t08.options) == 5 and len(opts) == 7
     t32 = next(x for x in dtpl.load_all(folder)[0] if x.file_name.startswith("32_"))
-    assert sorted(t08.options + t32.options) == [x.file_name for x in opts]   # 모든 선택안이 쓰인다
+    t36 = next(x for x in dtpl.load_all(folder)[0] if x.file_name.startswith("36_"))
+    assert sorted(t08.options + t32.options + t36.options) == [x.file_name for x in opts]   # 모든 선택안이 쓰인다
     assert t32.none_label == "소명대상 없음" and t08.none_label == "소명대상 없음"
     assert dtpl.parse(dtpl.dump(t32), t32.path).none_label == "소명대상 없음"
     assert dtpl.add_title_note("주택소유 심사 결과(26년 10월 입주자정기, 40차)", "소명대상 없음") == \
@@ -192,7 +193,7 @@ def test_cycle_header(tmp_path):
         if x.cycle == "수시":
             others.setdefault(x.bundle, []).append(x.file_name[:2])
     assert others == {"예비입주자": ["01", "02", "03", "04", "33", "35"], "기타": ["19", "27", "28"],
-                      "권리의무승계": ["21", "22", "23"], "가정어린이집": ["29", "30"]}
+                      "권리의무승계": ["21", "22", "23"], "가정어린이집": ["29", "30"], "중복입주": ["36"]}
 
 
 def test_renewal_templates_share_first():
@@ -274,3 +275,30 @@ def test_recruit_notice_template():
     t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("35_"))
     assert "{선택:형별=단지:평형|형}" in t.title and t.input_kinds()["형별"] == "선택"
     assert {"모집계획 문서번호", "모집인원", "기존인원"} <= set(t.input_fields())
+
+
+def test_duplicate_occupancy_quarter():
+    """36번 중복입주 결과 보고: 분기를 고르면 제목·본문에 들어가고 {중복입주링크} 자리가 있다."""
+    import datetime as dt
+    t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("36_"))
+    assert t.input_kinds().get("분기") == "선택" and t.input_options()["분기"] == ["1", "2", "3", "4"]
+    assert t.uses("중복입주링크")
+    v = {"입력:연도": "2026", "입력:분기": "2", "중복입주링크": "주거복지실-1737(2026.07.22.)"}
+    title = dtpl.fill(t.title, v, {})
+    assert dtpl.add_title_note(title, t.none_label) == "2026년 2분기 임대주택 중복입주 결과 보고(소명대상 없음)"
+    assert t.options == ["7_중복입주에 따른 소명 안내(분기 정기)"]
+    opt = next(x for x in dtpl.load_all(os.path.join(paths.template_dir(), dtpl.OPTION_DIR))[0]
+               if x.file_name == t.options[0])
+    assert not opt.internal and "{이름}" in opt.receiver
+    letter = dtpl.fill(opt.body, {**VALUES, **v}, {"제출기한": dt.date(2026, 12, 2)})
+    assert "2026년 2분기 중복입주 검색 결과" in letter and "{" not in letter
+    body = dtpl.fill(t.body, v, {"등본요청월": dt.date(2026, 7, 1)})
+    assert "1. 주거복지실-1737(2026.07.22.)호 관련 내용입니다." in body
+    assert "2026년 2분기 중복입주결과내역" in body and "2026년 7월 등본요청내역" in body
+
+
+def test_record_token():
+    """{기록:총계=0}: 자격검증 기록 값이 있으면 그 값, 없으면 = 뒤 값."""
+    assert dtpl.fill("| {기록:총계=0} | {기록:세대주=0} |", {"기록:총계": "69"}, {}) == "| 69 | 0 |"
+    t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("08_"))
+    assert "{기록:총계=0}" in t.body and dtpl.RECORD_PREFIX in t._all_text()

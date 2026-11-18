@@ -36,9 +36,12 @@
 - {계산:이름=식}                       : 다른 칸으로 계산한 값. 예: {계산:금액=수량*단가}
                                        + - * / ( )와 내림(x,10)·반올림·올림·합, 단지기본정보는 단지:평형1
 - {단지:항목}                         : 단지기본정보(파일 → 단지기본정보)의 값. 예: {단지:관리소명}
+- {기록:항목=0}                        : 자격검증 기록(관계철)에서 그 달(갱신월·검색월) 줄의 값. 예: {기록:총계=0}
+                                       항목: 총계·세대주·배우자·세대원·차수. 기록이 없으면 '=' 뒤 값
 - {문서링크}                          : 자동 작성 때 홈넷 [문서링크]로 '{입력:차수}차' 결과 통보 문서를 넣는 자리
 - {심사결과링크}                       : 같은 차수의 '입주자격심사 결과' 문서를 넣는 자리
 - {소명안내링크}                       : 같은 갱신월의 '소명 안내' 문서를 넣는 자리
+- {중복입주링크}                       : {선택:분기=1|2|3|4}로 고른 분기의 '중복입주 검색결과 통보' 문서를 넣는 자리
 표
 - '|'로 시작하는 줄이 이어지면 표. 첫 줄(또는 '|---|' 위의 줄들)이 머리글.
 - 칸 안 줄바꿈은 <br>, '^'는 위 칸과 합치기, '<'는 왼쪽 칸과 합치기.
@@ -59,6 +62,8 @@ CHOICE_ROW_RE = re.compile(r"\{선택값:([^{}|=]+)(?:\|([^{}]+))?\}")   # 고�
 CHOICE_SEP = ", "
 CALC_RE = re.compile(r"\{계산:([^{}=]+)=([^{}]+)\}")
 COMPLEX_RE = re.compile(r"\{단지:([^{}|=]+)\}")
+RECORD_RE = re.compile(r"\{기록:([^{}|=]+)(?:=([^{}]*))?\}")   # 자격검증 기록(관계철) 값: values['기록:총계']
+RECORD_PREFIX = "기록:"
 TYPE_RE = re.compile(r"\{유형:([^{}]+)\}")     # {유형:영구=제10조|국민·행복=제9조}: 기본정보의 임대유형에 맞는 글자만
 FIELD_RE = re.compile(r"\{([^{}:|]+)\}")
 COMPLEX_PREFIX = "단지:"
@@ -554,6 +559,11 @@ def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> st
     if calcs:
         results = compute(calcs, _calc_env([text] + list(extras or []), values))
         text = CALC_RE.sub(lambda m: results.get(m.group(1).strip(), m.group(0)), text)
+    def record_sub(m):
+        v = str(values.get(RECORD_PREFIX + m.group(1).strip(), "") or "").strip()
+        return v or (m.group(2) if m.group(2) is not None else m.group(0))
+
+    text = RECORD_RE.sub(record_sub, text)
     text = COMPLEX_RE.sub(complex_sub, NUM_RE.sub(num_sub, DATE_RE.sub(date_sub, text)))
     return FIELD_RE.sub(field_sub, INPUT_RE.sub(input_sub, text))
 

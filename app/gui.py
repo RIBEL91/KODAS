@@ -46,9 +46,6 @@ BROWN, SUB = ui_kit.TEXT, ui_kit.SUB   # 본문 글자, 설명 글자
 LINE = ui_kit.LINE          # 옅은 구분선
 SELECT_BG = ui_kit.PRIMARY_SOFT       # 목록에서 고른 줄
 LINK_KEYS = ("문서링크", "심사결과링크", "소명안내링크")   # 자동 작성 때 홈넷 [문서링크]로 채우는 칸
-# 문서번호(등록번호): '가나관리소-1234', '1234', 날짜를 붙이면 그 해 대장에서 '가나관리소-12(2025. 1. 2.)'
-DOC_NO_RE = re.compile(r"^((?:[^\s,()-]+-)?\d{1,7})\s*(?:\(\s*((?:19|20)\d{2})[^()]*\))?$")
-LINK_FIELD = "관련문서"     # 서식의 {관련문서} 자리(없으면 1안 본문 맨 위 '관련:' 줄)에 [문서링크]로 넣는 관련 문서
 TEXT_OPTS = dict(bg="white", relief="flat", borderwidth=0, highlightthickness=1,
                  highlightbackground="#e0e0e0", highlightcolor=ACCENT, padx=6, pady=4)
 INFO_FIELDS = [("단지명", "단지명", "예: 광주우산3 (관리소명·약칭은 자동)"),
@@ -106,8 +103,12 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
     return style
 
 
+DEADLINE_WORKDAYS = 10     # 기한 날짜 칸의 처음 값: 오늘부터 근무일(토·일·공휴일 빼고) 10일 뒤
+
+
 def default_date(label: str, today: dt.date) -> dt.date:
-    return today + dt.timedelta(days=14) if "기한" in label else today
+    import kr_holidays
+    return kr_holidays.add_workdays(today, DEADLINE_WORKDAYS) if "기한" in label else today
 
 
 def saved_month(months, file_name: str) -> dt.date | None:
@@ -117,6 +118,12 @@ def saved_month(months, file_name: str) -> dt.date | None:
         return dt.date(int(year), int(month), 1)
     except (KeyError, TypeError, AttributeError, ValueError):
         return None
+
+
+def last_quarter(today: dt.date) -> tuple[int, int]:
+    """지난 분기 (연도, 분기). 분기 보고는 분기가 끝난 뒤에 쓰므로 처음 고를 값으로 쓴다(1월이면 지난해 4분기)."""
+    q = (today.month - 1) // 3
+    return (today.year, q) if q else (today.year - 1, 4)
 
 
 def month_end(d: dt.date) -> dt.date:
@@ -142,6 +149,8 @@ def auto_date_rule(label: str, fields: dict):
 
 
 KEY_DATES = ("갱신월", "제출기한")      # 꼭 넣어야 하는 날짜(빨간 *)
+RECORD_FIELDS = ("차수", "자격검색요청일", "조사완료일")   # 자격검증 기록에서 채우는 입력칸
+RECORD_COUNTS = ("총계", "세대주", "배우자", "세대원")        # {기록:…}으로 넣는 요청건수
 ROUND_DATES = ("검색결과통보일",)        # 차수로 홈넷에서 찾아 채우는 날짜
 AUTO_DATE_NOTES = {"안내문시행일": "작성일", "대상세대 갱신월": "검색월 13개월 전",
                    "재임대월": "갱신월 2개월 전"}   # 나머지는 갱신월 말일
@@ -200,17 +209,27 @@ class MonthEntry(ttk.Frame):
 class ChoiceBox(ttk.Frame):
     """{선택:형별=36|46|51} 칸: 체크칸을 늘어놓고 고른 것을 '36, 51'처럼 돌려준다(입력칸처럼 get()을 쓴다)."""
 
-    def __init__(self, parent, options: list[str], suffix: str = "", command=None):
+    def __init__(self, parent, options: list[str], suffix: str = "", command=None, single: bool = False):
         super().__init__(parent)
         self.vars = []
+        self.single = single        # 하나만 고르는 칸(예: 분기)
+        self.command = command
         if not options:
             ttk.Label(self, text="고를 것이 없습니다 — [단지기본정보]의 평형 칸을 채워 주세요",
                       foreground="#b45309").pack(side="left")
         for opt in options:
             v = tk.BooleanVar(value=False)
             ttk.Checkbutton(self, text=dtpl.choice_label(opt, suffix), variable=v,
-                            command=command).pack(side="left", padx=(0, 10))
+                            command=lambda v=v: self._picked(v)).pack(side="left", padx=(0, 10))
             self.vars.append((opt, v))
+
+    def _picked(self, var) -> None:
+        if self.single and var.get():
+            for _o, v in self.vars:
+                if v is not var:
+                    v.set(False)
+        if self.command:
+            self.command()
 
     def get(self) -> str:
         return dtpl.CHOICE_SEP.join(o for o, v in self.vars if v.get())
@@ -442,7 +461,8 @@ class App:
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
                      ("대장 문서 받기", "download", "green", self._collect_docs),
                      ("사용 방법", "help", "violet", self._show_help),
-                     ("품질평가서 작성", "report", "teal", self._quality_menu))
+                     ("품질평가서 작성", "report", "teal", self._quality_menu),
+                     ("자격검증 기록", "list", "pink", self._verify_log))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
                                        items=lambda: list(enumerate(self.templates)),
@@ -631,6 +651,7 @@ class App:
         f.add_command(label="홈넷 대장 문서 받기 (PDF·첨부·서식)…", command=self._collect_docs)
         f.add_command(label="받은 대장 문서 폴더 열기", command=lambda: os.startfile(paths.sub_dir("수집")))
         f.add_command(label="품질평가서 작성…", command=self._quality_menu)
+        f.add_command(label="자격검증 기록…", command=self._verify_log)
         f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
@@ -1414,7 +1435,7 @@ class App:
             de.set_date(old_dates.get(label) or last or default_date(label, today))
             de.grid(row=rr, column=cc + 1, sticky="w", padx=4)
             if "기한" in label:
-                self._help(f"{label}: 작성일부터 2주 뒤 날짜가 미리 들어갑니다. ▼를 눌러 달력에서 바꿀 수 있습니다.")
+                self._help(f"{label}: 작성일부터 토·일·공휴일을 빼고 근무일 10일 뒤 날짜가 미리 들어갑니다. ▼를 눌러 달력에서 바꿀 수 있습니다.")
             self.date_widgets[label] = de
         r += len(fields)
         # {입력:항목} 수기 입력 칸(두 칸씩 한 줄)
@@ -1443,13 +1464,18 @@ class App:
             box = ttk.Frame(f)
             box.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
             if kinds.get(label) == "선택":     # 체크해서 고르는 칸(예: 형별 36·46·51형)
-                e = ChoiceBox(box, options.get(label, []), "형" if label == "형별" else "",
-                              command=self._refresh)
-                e.set(old_values.get("입력:" + label, ""))
+                quarter = label == "분기"
+                e = ChoiceBox(box, options.get(label, []),
+                              "형" if label == "형별" else "분기" if quarter else "",
+                              command=self._refresh, single=quarter)
+                e.set(old_values.get("입력:" + label, "") or (str(last_quarter(today)[1]) if quarter else ""))
                 e.pack(side="left")
                 self.required.append((lb, e))
                 self.text_widgets[label] = e
-                self._help(f"{label}: 해당하는 것을 모두 체크합니다. 제목과 표에 고른 것이 들어갑니다.")
+                self._help("분기: 하나를 고릅니다(처음엔 지난 분기). 자동 작성 때 기록물등록대장에서 그 분기의 "
+                           "'중복입주 검색결과 통보'를 찾아 관련 문서 자리에 [문서링크]로 넣습니다."
+                           if quarter and any(d.uses("중복입주링크") for d in docs) else
+                           f"{label}: 해당하는 것을 모두 체크합니다. 제목과 표에 고른 것이 들어갑니다.")
                 r += 1
                 continue
             is_date = label.endswith("일") and kinds.get(label) not in ("금액", "숫자")
@@ -1461,7 +1487,8 @@ class App:
                 e = ttk.Entry(box, width=18)
             self.required.append((lb, e))
             e.insert(0, old_values.get("입력:" + label, defaults.get(label, ""))
-                     or (dtpl.fmt_date(today, "일") if is_date else ""))
+                     or (dtpl.fmt_date(today, "일") if is_date else "")
+                     or (str(last_quarter(today)[0]) if label == "연도" and "분기" in inputs else ""))
             e.pack(side="left")
             e.bind("<KeyRelease>", lambda _e: self._refresh())
             self.text_widgets[label] = e
@@ -1484,18 +1511,17 @@ class App:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
             self.auto_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
             r += 1
-        # 관련 문서: 제목 일부를 적으면 자동 작성 때 홈넷 [문서링크]로 그 문서를 본문에 넣는다
-        ttk.Label(f, text="🔗 관련 문서번호").grid(row=r, column=0, sticky="e", padx=8, pady=4)
-        lbox = ttk.Frame(f)
-        lbox.grid(row=r, column=1, columnspan=5, sticky="w", padx=4)
-        self.link_entry = ttk.Entry(lbox, width=34)
-        self.link_entry.insert(0, old_values.get(LINK_FIELD + "_검색어", ""))
-        self.link_entry.pack(side="left")
-        self.link_entry.bind("<KeyRelease>", lambda _e: self._refresh())
-        ttk.Label(lbox, foreground="#777", text="예: 광주우산3관리소-1234 또는 1234 (여러 개는 쉼표) — "
-                                                "자동 작성 때 그 번호의 문서를 [문서링크]로 넣습니다"
-                  ).pack(side="left", padx=8)
-        r += 1
+        # 자격검증 기록: 갱신월·검색월로 그 달 줄을 찾아 차수·요청일·조사완료일·요청건수를 채운다
+        self.record_sheet = self._record_sheet(docs)
+        self.record_label = None
+        if not keep:
+            self.record_auto = {}
+        if self.record_sheet is not None:
+            self.record_label = ttk.Label(f, foreground="#1a7f37", wraplength=int(760 * self.k), justify="left")
+            self.record_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
+            r += 1
+            self.record_initial = {lb: self._record_widget_value(lb) for lb in RECORD_FIELDS}
+            self._load_verify_book()
         # 선택안이 있으면 안마다 위에서 고르고, 외부유통문서에서 찾는 서식은 엑셀을 쓰지 않는다
         if not sender.internal and not t.options and not sender.external_receiver:
             self._build_upload_row(f, r)
@@ -1504,21 +1530,186 @@ class App:
             ttk.Label(f, text="이 서식은 넣을 이름·날짜가 없습니다. 아래 본문을 확인하고 필요하면 직접 고쳐 주세요.",
                       foreground="#555").grid(row=0, column=0, padx=8, pady=8)
 
+    # ---------- 자격검증 기록 → 공문 ----------
+    def _record_sheet(self, docs):
+        """이 공문이 쓸 자격검증 기록 탭: 갱신월이 있으면 갱신, 검색월이 있으면 주택정기.
+        차수를 넣는 서식이거나 {기록:…} 칸이 있는 서식만."""
+        import verify_log as vl
+        if not any("차수" in d.input_fields() or dtpl.RECORD_PREFIX in d._all_text() for d in docs):
+            return None
+        labels = {lb for d in docs for lb, _ in d.date_fields()}
+        if "갱신월" in labels:
+            return vl.RENEW
+        if "검색월" in labels:
+            return vl.REGULAR
+        return None
+
+    def _load_verify_book(self, force: bool = False):
+        """자격검증 기록(KODAS 안에 따로 저장한 것)을 읽어 둔다. 기록이 아직 없으면 처음 한 번만
+        바탕화면 관계철 엑셀에서 가져온다(몇 초 걸리므로 따로). 다 읽으면 화면을 다시 채운다."""
+        import verify_log as vl
+        if getattr(self, "verify_loading", False) or (getattr(self, "verify_cache", None) is not None and not force):
+            return
+        excel = "" if vl.store_exists() else vl.default_book()
+        self.verify_loading = True
+        box = {}
+
+        def work():
+            try:
+                if excel:
+                    vl.store_import_excel(excel)
+                box["book"] = vl.store_book()
+            except Exception as ex:
+                box["err"] = ex
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+
+        def poll():
+            if th.is_alive():
+                self.root.after(150, poll)
+                return
+            self.verify_loading = False
+            self.verify_cache = box.get("book") or False
+            if "err" in box:
+                self.log(f"⚠️ 자격검증 기록을 읽지 못했습니다: {box['err']}")
+            self._refresh()
+        poll()
+
+    def _record_month(self, dates: dict):
+        sheet = getattr(self, "record_sheet", None)
+        if sheet is None:
+            return None, None
+        return sheet, dates.get("검색월" if sheet.key == "주택정기" else "갱신월")
+
+    def _verify_record(self, dates: dict) -> dict | None:
+        """그 달(갱신월·검색월)의 자격검증 기록 줄. 같은 달 줄이 여럿이면 요청건수(총계)가 가장 큰 줄."""
+        sheet, month = self._record_month(dates)
+        book = getattr(self, "verify_cache", None)
+        if sheet is None or not month or not book:
+            return None
+        label = f"{month.year % 100:02d}-{month.month}월"
+        cands = [r for r in book.rows.get(sheet.key, []) if str(r.get("입주자격검색", "")).strip() == label]
+        if not cands:
+            return None
+        return max(cands, key=lambda r: r["총계"] if isinstance(r.get("총계"), (int, float)) else -1)
+
+    def _record_widget_value(self, label: str):
+        if label in getattr(self, "text_widgets", {}):
+            try:
+                return self.text_widgets[label].get().strip()
+            except tk.TclError:
+                return ""
+        de = getattr(self, "date_widgets", {}).get(label)
+        if de is not None:
+            try:
+                return de.get_date()
+            except Exception:
+                return None
+        return None
+
+    def _apply_record(self):
+        """자격검증 기록 그 달 줄의 차수·요청일·조사완료일을 입력칸에 넣는다.
+        직접 고친 칸은 건드리지 않는다(처음 값이거나 전에 기록으로 넣은 값일 때만 바꾼다)."""
+        lbl = getattr(self, "record_label", None)
+        if lbl is None:
+            return
+        try:
+            if not lbl.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        dates = {}
+        for k, de in self.date_widgets.items():
+            try:
+                dates[k] = de.get_date()
+            except Exception:
+                pass
+        sheet, month = self._record_month(dates)
+        book = getattr(self, "verify_cache", None)
+        if book is None:
+            lbl.config(text="📒 자격검증 기록을 읽는 중…", foreground="#777")
+            return
+        if book is False:
+            lbl.config(text="📒 자격검증 기록을 읽지 못했습니다 — 바로가기 [자격검증 기록]을 확인해 주세요",
+                       foreground="#777")
+            return
+        if not month:
+            return
+        name = f"{month.year % 100:02d}-{month.month}월"
+        rec = self._verify_record(dates)
+        if rec is None:
+            lbl.config(text=f"📒 자격검증 기록({sheet.key})에 {name} 줄이 없습니다 — 차수·날짜·요청건수는 직접 넣어 주세요",
+                       foreground="#b45309")
+            return
+        want = {"차수": re.sub(r"\D", "", str(rec.get("차수") or "")),
+                "자격검색요청일": rec.get("요청일"),
+                "조사완료일": rec.get("조사완료일") or rec.get("조사완료일(문서통보일)")}
+        auto, init = self.record_auto, getattr(self, "record_initial", {})
+        for label, val in want.items():
+            if val in ("", None):
+                continue
+            if label in self.text_widgets:
+                e = self.text_widgets[label]
+                text = dtpl.fmt_date(val, "일") if isinstance(val, dt.date) else str(val)
+                cur = e.get().strip()
+                if cur in ("", init.get(label), auto.get(label)):
+                    if cur != text:
+                        e.delete(0, "end")
+                        e.insert(0, text)
+                    auto[label] = text
+            elif label in self.date_widgets and isinstance(val, dt.date):
+                de = self.date_widgets[label]
+                try:
+                    cur = de.get_date()
+                except Exception:
+                    cur = None
+                if cur in (None, init.get(label), auto.get(label)):
+                    if cur != val:
+                        de.set_date(val)
+                    auto[label] = val
+        parts = [str(rec["차수"]) if rec.get("차수") not in ("", None) else ""]
+        if isinstance(rec.get("요청일"), dt.date):
+            parts.append(f"요청일 {dtpl.fmt_date(rec['요청일'], '일')}")
+        if isinstance(want["조사완료일"], dt.date):
+            parts.append(f"조사완료일 {dtpl.fmt_date(want['조사완료일'], '일')}")
+        if rec.get("총계") not in ("", None):
+            parts.append(f"요청 {rec['총계']}건(세대주 {rec.get('세대주', 0)} · 배우자 {rec.get('배우자', 0)} · "
+                         f"세대원 {rec.get('세대원', 0)})")
+        lbl.config(text=f"📒 자격검증 기록({sheet.key}) {name}: " + " · ".join(p for p in parts if p)
+                   + "  → 공문에 넣었습니다(직접 고친 칸은 그대로)", foreground="#1a7f37")
+
     def _round(self) -> str:
         e = self.text_widgets.get("차수") if hasattr(self, "text_widgets") else None
         n = e.get().strip().rstrip("차").strip() if e is not None else ""
         return n if n.isdigit() else ""
 
+    def _text_input(self, label: str) -> str:
+        e = getattr(self, "text_widgets", {}).get(label)
+        try:
+            return e.get().strip() if e is not None else ""
+        except tk.TclError:
+            return ""
+
     def _link_specs(self, dates: dict) -> dict:
         """서식의 링크 칸 → [문서링크]로 넣을 관련 문서(DocLink).
         fallback(미리보기 글자) 자리에 자동 작성 때 홈넷 [문서링크]로 그 문서가 들어간다."""
         import ledger
+        DocLink = homnet_draft.DocLink
+        specs = {}
+        # 중복입주: 고른 분기의 'LH 임대주택 중복입주 검색결과 통보'(기록물등록대장)
+        q = self._text_input("분기").split(",")[0].strip()
+        if q.isdigit():
+            year = self._text_input("연도").rstrip("년").strip()
+            specs["중복입주링크"] = DocLink(
+                "중복입주", ("중복입주", f"{q}분기"),
+                f"[문서링크: {year + '년 ' if year else ''}{q}분기 중복입주 검색결과 통보]",
+                exclude=("결과 보고", "결과보고"),
+                prefer=((rf"{year}\s*년",) if year.isdigit() else ()) + ("통보",))
         n = self._round()
         if not n:
-            return {}
-        DocLink = homnet_draft.DocLink
+            return specs
         round_re = rf"(^|[^0-9]){n}\s*차"
-        specs = {
+        specs |= {
             "문서링크": DocLink(f"{n}차", (f"{ledger.NOTICE_TITLE}({n}차",), f"[문서링크: {n}차 결과 통보]"),
             "심사결과링크": DocLink(f"{n}차", ("입주자격심사 결과",), f"[문서링크: {n}차 입주자격심사 결과]",
                                 prefer=(round_re,), min_prefer=1),
@@ -1537,8 +1728,6 @@ class App:
         specs = {k: v for k, v in self._link_specs(dates).items() if d.uses(k)}
         order = sorted(specs, key=lambda k: d.body.find("{" + k + "}"))
         links = [specs[k] for k in order]
-        if "{" + LINK_FIELD + "}" in self._link_body(d):      # [🔗 관련 문서]에 적은 문서들
-            links += [self._user_link(w) for w in self._link_words()]
         return [dataclasses.replace(x, mark=homnet_draft.LINK_MARK.replace("⟧", f"{i}⟧"))
                 for i, x in enumerate(links, 1)]
 
@@ -1688,47 +1877,16 @@ class App:
         found_round, found = getattr(self, "found", ("", {}))
         if found_round and found_round == self._round():
             dates.update({k: v for k, v in found.items() if k in getattr(self, "found_labels", [])})
+        rec = self._verify_record(dates)
+        if rec:
+            for k in RECORD_COUNTS:
+                if rec.get(k) not in ("", None):
+                    values[dtpl.RECORD_PREFIX + k] = str(rec[k])
+            if rec.get("차수") not in ("", None):
+                values[dtpl.RECORD_PREFIX + "차수"] = re.sub(r"\D", "", str(rec["차수"]))
         for key, link in self._link_specs(dates).items():
             values[key] = link.fallback
-        words = self._link_words()
-        values[LINK_FIELD + "_검색어"] = ", ".join(words)
-        values[LINK_FIELD] = ", ".join(self._user_link_text(w) for w in words)
         return values, dates
-
-    def _link_words(self) -> list[str]:
-        """[🔗 관련 문서] 칸의 검색어들(쉼표로 나눔)."""
-        e = getattr(self, "link_entry", None)
-        try:
-            raw = e.get() if e is not None and e.winfo_exists() else ""
-        except tk.TclError:
-            raw = ""
-        return [w.strip() for w in re.split(r"[,，]+", raw) if w.strip()]
-
-    @staticmethod
-    def _user_link_text(word: str) -> str:
-        return f"[문서링크: {word}]"
-
-    @classmethod
-    def _user_link(cls, word: str) -> homnet_draft.DocLink:
-        """[🔗 관련 문서번호]에 적은 말 → 문서링크. 문서번호(…-1234, 1234)면 등록번호로 정확히 찾고,
-        번호가 아니면(예전처럼) 문서 제목 일부로 찾는다."""
-        m = DOC_NO_RE.match(word)
-        if m:
-            return homnet_draft.DocLink(m.group(1), (m.group(1),), cls._user_link_text(word), doc_no=m.group(1),
-                                        year=m.group(2) or "")
-        return homnet_draft.DocLink(word, (word,), cls._user_link_text(word))
-
-    def _link_target(self) -> dtpl.Template | None:
-        """서식에 {관련문서} 자리가 없을 때 관련 문서 줄을 넣을 안(1안)."""
-        docs = self._docs()
-        return docs[0] if docs else None
-
-    def _link_body(self, t: dtpl.Template) -> str:
-        """관련 문서를 적었고 서식에 {관련문서} 자리가 없으면 1안 본문 맨 위에 '관련:' 줄을 넣는다."""
-        if (self._link_words() and "{" + LINK_FIELD + "}" not in t.body
-                and not any(d.uses(LINK_FIELD) for d in self._docs()) and t is self._link_target()):
-            return "관련: {" + LINK_FIELD + "}\n" + t.body
-        return t.body
 
     def _filled(self, doc: dtpl.Template | None = None) -> tuple[str, str, str]:
         """(제목, 수신자, 본문 텍스트). doc을 주지 않으면 1안(고른 서식)."""
@@ -1745,7 +1903,7 @@ class App:
             receiver = "⚠ 이 안의 수신자 엑셀을 골라 주세요"
         else:
             receiver = dtpl.fill_receiver(t.receiver, values)
-        body = dtpl.fill(self._link_body(t), values, dates, t.extras)
+        body = dtpl.fill(t.body, values, dates, t.extras)
         if getattr(self, "proof_on", False):     # [올바른 문서 만들기]: 넣은 날짜·금액 등도 규칙대로
             title, body = proofread.fix_title(title)[0], proofread.fix(body)[0]
         return title, receiver, body
@@ -1817,6 +1975,7 @@ class App:
     def _refresh(self):
         if self.current is None:
             return
+        self._apply_record()
         self._mark_required()
         if self.edit_mode:
             return
@@ -2135,6 +2294,25 @@ class App:
         dlg.geometry(f"+{x}+{y}")
         dlg.grab_set()
 
+    def _verify_log(self):
+        """바로가기 [자격검증 기록]: 주민등록 검증결과(갱신·주택정기·명의변경) 기록(KODAS 안에 따로 저장)."""
+        import verify_view
+        win = getattr(self, "_verify_win", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            return
+        self._verify_win = verify_view.VerifyDialog(self.root, self.cfg, self.k)
+
+        def closed(e):
+            if e.widget is self._verify_win:
+                self._save_settings()
+                self.verify_cache = None        # 고친 기록을 공문 작성에 다시 읽어 쓴다
+                if getattr(self, "record_label", None) is not None:
+                    self._load_verify_book()
+        self._verify_win.bind("<Destroy>", closed)
+
     def _quality_eval(self):
         """바로가기 [품질평가서 작성]: 평가표 엑셀 점수·근거 입력과 항목별 증빙 폴더."""
         import quality_view
@@ -2375,8 +2553,6 @@ class App:
             "  3. 아래 확인하기에서 제목·수신자를 봅니다. 본문은 [✏ 본문 직접 고치기]를 누르면 열립니다.\n"
             "     [✔ 올바른 문서 만들기]를 누르면 날짜·시간·금액 표기, 항목 번호, 붙임, '끝.' 표시, 행정용어를\n"
             "     공문서 규칙대로 고쳐 줍니다.\n"
-            "     [🔗 관련 문서번호]에 문서번호(예: 가나관리소-1234, 지난해 문서는 가나관리소-12(2025. 1. 2.))를\n"
-            "     적으면 그 문서를 [문서링크]로 본문에 넣습니다.\n"
             "  4. [홈넷에 자동 작성]을 누르면 브라우저가 열리고\n"
             "     전자결재 → 문서작성 → 표준기안문에 제목·수신자·본문을 넣습니다.\n"
             "  5. 브라우저에서 내용을 확인하고 [결재올림]은 직접 누릅니다.\n\n"
@@ -2441,7 +2617,6 @@ class App:
             "  구분: 목록에서 묶을 이름\n  ---   ← 이 줄 아래가 본문\n\n"
             "빈칸\n"
             "  {이름} {주소} — 공문마다 입력\n"
-            "  {관련문서} — [🔗 관련 문서번호]에 적은 문서를 [문서링크]로 넣을 자리(없으면 1안 맨 위 '관련:' 줄)\n"
             "  {단지명} {담당자} {전화번호} {관리소} — 기본정보에서 자동\n"
             "  {날짜:제출기한} → 2026년 11월 6일(금)\n"
             "  {날짜:만료일|일} → 2026년 11월 6일   |월 → 2026년 11월   |점 → 2026.11.06.\n"
