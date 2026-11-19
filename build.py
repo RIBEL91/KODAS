@@ -46,23 +46,12 @@ def main():
         sys.exit("테스트 실패 — 빌드를 멈춥니다.")
     import PyInstaller.__main__
 
-    def p(*parts):   # spec 파일이 build\에 생기므로 경로는 모두 절대 경로로 준다
-        return os.path.join(ROOT, *parts)
-    out = p("build", "exe")
+    out = os.path.join(ROOT, "build", "exe")
+    # 무엇을 넣고 뺄지는 KODAS.spec에 있다(쓰지 않는 모듈·다른 OS 파일을 빼서 용량을 줄인다)
     PyInstaller.__main__.run([
-        "--noconfirm", "--clean", "--onefile", "--windowed",
-        "--name", NAME, "--icon", p("assets", "app.ico"),
-        "--splash", p("assets", "splash.png"),     # 풀리는 몇 초 동안 '여는 중' 화면 (gui.bring_to_front에서 닫음)
-        "--paths", p("app"),
-        # webdriver.Chrome/Edge 지연 임포트를 PyInstaller가 놓치지 않도록
-        "--collect-submodules", "selenium",
-        "--collect-data", "sv_ttk",
-        "--collect-all", "winrt",                  # 원터치 자동작성: Windows OCR로 WISE 화면 글자 읽기
-        "--collect-data", "babel", "--hidden-import", "babel.numbers",   # 달력(tkcalendar) 한국어
-        "--add-data", f"{p('assets')}{os.pathsep}assets",
-        "--add-data", f"{p('서식')}{os.pathsep}서식",
-        "--distpath", out, "--workpath", p("build"), "--specpath", p("build"),
-        p("app", "gui.py"),
+        "--noconfirm", "--clean",
+        "--distpath", out, "--workpath", os.path.join(ROOT, "build"),
+        os.path.join(ROOT, "KODAS.spec"),
     ])
     built = os.path.join(out, NAME + ".exe")
     print(f"\n메인 실행 파일: {_put(built, MAIN_DIR)}")
