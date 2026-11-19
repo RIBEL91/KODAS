@@ -52,6 +52,8 @@ class VerifyDialog(tk.Toplevel):
         ttk.Label(top, text="자격검증 기록", font=(F, 15, "bold")).pack(side="left")
         ttk.Label(top, text="칸을 두 번 누르거나 골라서 바로 적으면 곧바로 저장됩니다",
                   foreground=ui_kit.SUB).pack(side="left", padx=12)
+        ttk.Button(top, text="⬆ 엑셀 올려 적용", command=self._import_xlsx).pack(side="right")
+        ttk.Button(top, text="⬇ 엑셀로 받기", command=self._export_xlsx).pack(side="right", padx=(0, 6))
 
         style = ttk.Style(self)
         style.configure("Grid.Treeview", rowheight=int(26 * self.k), font=(F, 10))
@@ -568,6 +570,68 @@ class VerifyDialog(tk.Toplevel):
         self._memo_load_empty(v)
         self._fill_tree(v)
         self._set_status(f"'{name}' 줄을 지웠습니다.")
+
+    # ---------------- 엑셀로 받기 · 올려 적용 ----------------
+    def _wait_saved(self) -> bool:
+        self._close_editor(True)
+        for v in vl.VIEWS:
+            self._memo_save(v)
+        if self.busy or self.queue:
+            self._set_status("저장이 끝난 뒤 다시 눌러 주세요.")
+            return False
+        return True
+
+    def _export_xlsx(self):
+        if not self._wait_saved():
+            return
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            parent=self, title="자격검증 기록을 엑셀로 받기", defaultextension=".xlsx",
+            initialdir=os.path.join(os.path.expanduser("~"), "Desktop"),
+            initialfile=f"자격검증기록_{vl.dt.date.today():%Y%m%d}.xlsx", filetypes=[("엑셀 파일", "*.xlsx")])
+        if not path:
+            return
+        self._set_status("엑셀로 쓰는 중…")
+
+        def done(n):
+            self._set_status(f"✅ 기록 {n}줄을 엑셀로 받았습니다 — {path}")
+            if messagebox.askyesno("엑셀로 받기", f"기록 {n}줄을 저장했습니다.\n{path}\n\n지금 열어 볼까요?", parent=self):
+                os.startfile(path)
+        self._run(lambda: vl.store_export_xlsx(path), done)
+
+    def _import_xlsx(self):
+        if not self._wait_saved():
+            return
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            parent=self, title="적용할 자격검증 기록 엑셀 고르기",
+            initialdir=os.path.join(os.path.expanduser("~"), "Desktop"), filetypes=[("엑셀 파일", "*.xlsx")])
+        if not path:
+            return
+        try:
+            got = vl.read_xlsx(path)
+        except vl.ExcelError as ex:
+            messagebox.showwarning("엑셀 올려 적용", str(ex), parent=self)
+            return
+        lines = "\n".join(f"· {k}: 지금 {len(self.rows[k])}줄 → {len(rows)}줄" for k, rows in got.items())
+        if not messagebox.askyesno(
+                "엑셀 올려 적용",
+                f"올린 파일 내용으로 기록을 바꿉니다.\n\n{lines}\n\n"
+                "파일에 없는 시트는 그대로 둡니다. 지금 기록은 백업 폴더에 남겨 둡니다.\n적용할까요?", parent=self):
+            return
+        self._set_status("엑셀 내용을 적용하는 중…")
+
+        def done(counts):
+            book = vl.store_book()
+            for s in vl.SHEETS:
+                self.rows[s.key] = book.rows[s.key]
+            for v in vl.VIEWS:
+                self.tabs[v.key]["memo_rec"] = None
+                self._memo_load_empty(v)
+                self._fill_tree(v)
+            self._set_status("✅ 엑셀 내용을 적용했습니다 — "
+                             + " · ".join(f"{k} {n}줄" for k, n in counts.items()))
+        self._run(lambda: vl.store_import_xlsx(path), done)
 
     def _close(self):
         self._close_editor(True)

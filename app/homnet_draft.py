@@ -821,6 +821,7 @@ function isGap(t) { return !t || /^\s+$/.test(t); }
 function spacing(p, a, b, delta) {          // [a, b) 글자의 자간을 delta(%)만큼 바꾼다
   h.SelectText(p, a, p, b);
   var act = h.CreateAction('CharShape'), s = act.CreateSet(); act.GetDefault(s);
+  try { s.RemoveItem('TextColor'); } catch (e) {}    // 빨간 글씨(중요한 날짜)를 지키려고 색은 건드리지 않는다
   for (var k = 0; k < LANG.length; k++) { var v = Number(s.Item(LANG[k])) || 0; s.SetItem(LANG[k], v + delta); }
   act.Execute(s);
   try { h.Run('Cancel'); } catch (e) {}
@@ -994,6 +995,7 @@ for (var k = 0; k < marks.length; k++) {
     h.Run('Cancel');                                  // 찾은 글자 선택만 풀고 커서는 첫 칸에 둔다
     h.Run('TableCellBlock'); h.Run('TableCellBlockExtend'); h.Run('TableCellBlockExtend');
     var a = h.CreateAction('CharShape'), s = a.CreateSet(); a.GetDefault(s);
+    try { s.RemoveItem('TextColor'); } catch (e) {}  // 칸마다 글자 색(빨간 날짜)은 그대로 둔다
     for (var i = 0; i < FACES.length; i++) {
       s.SetItem('FaceName' + FACES[i], face); s.SetItem('FontType' + FACES[i], 1);
     }

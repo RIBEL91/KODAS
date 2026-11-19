@@ -520,7 +520,8 @@ class Home(HitCanvas):
             else:
                 P.tint_icon(icon, tx0 + tw / 2, ty0 + th * 0.38, 21 * k, tint, square=True, size=20 * k)
                 lt = self.create_text(tx0 + tw / 2, ty0 + th * 0.76, anchor="center", text=label,
-                                      font=(FONT, fs(10, k, 8.5)), fill=TEXT)
+                                      font=(FONT, fs(10, k, 8.5)), fill=TEXT,
+                                      width=tw - 16 * k, justify="center")   # 긴 이름은 두 줄로
             self.add_hit((tx0, ty0, tx0 + ww, ty0 + th), cmd,
                          (lambda t=lt: lambda v: self.itemconfigure(t, fill=PRIMARY_D if v else TEXT))())
 

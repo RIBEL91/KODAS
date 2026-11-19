@@ -77,3 +77,31 @@ def test_store_write_move_delete(tmp_path, monkeypatch):
     assert rows[1]["요청일"] == dt.date(2026, 1, 5)    # 날짜는 날짜로 되살린다
     vl.store_delete(vl.RENEW, 1)
     assert [(r["_row"], r["입주자격검색"]) for r in vl.store_load()["갱신"]] == [(1, "26-3월"), (2, "26-2월")]
+
+
+def test_export_import_xlsx_roundtrip(tmp_path, monkeypatch):
+    """[엑셀로 받기]한 파일을 고쳐 [엑셀 올려 적용]하면 그 내용으로 바뀐다(없는 시트는 그대로)."""
+    import paths
+    from openpyxl import load_workbook
+    monkeypatch.setattr(vl, "store_path", lambda: str(tmp_path / "기록.json"))
+    monkeypatch.setattr(paths, "sub_dir", lambda *a: str(tmp_path))
+    vl.store_write(vl.RENEW, {"입주자격검색": "26-1월", "요청일": dt.date(2026, 1, 5), "세대주": 2, "배우자": 1,
+                              vl.MEMO: "소명 1건"}, 0)
+    vl.store_write(vl.REGULAR, {"입주자격검색": "26-2월", "세대주": 3}, 0)
+    out = tmp_path / "받기.xlsx"
+    assert vl.store_export_xlsx(str(out)) == 2
+    wb = load_workbook(out)
+    ws = wb[vl.RENEW.name]
+    assert ws.cell(vl.HEAD_ROW, vl.FIRST_COL).value == "입주자격검색"
+    ws.cell(vl.FIRST_ROW, vl.FIRST_COL + 5).value = 4          # 배우자 1 → 4
+    ws.cell(vl.FIRST_ROW + 1, vl.FIRST_COL).value = "26-2월"
+    ws.cell(vl.FIRST_ROW + 1, vl.FIRST_COL + 1).value = "2026. 2. 3."
+    del wb[vl.REGULAR.name]
+    wb.save(out)
+    counts = vl.store_import_xlsx(str(out))
+    assert counts[vl.RENEW.key] == 2
+    data = vl.store_load()
+    r1, r2 = data[vl.RENEW.key]
+    assert r1["총계"] == 6 and r1["요청일"] == dt.date(2026, 1, 5) and r1[vl.MEMO] == "소명 1건"
+    assert r2["요청일"] == dt.date(2026, 2, 3)
+    assert data[vl.REGULAR.key][0]["세대주"] == 3              # 파일에 없던 시트는 그대로

@@ -740,7 +740,7 @@ def table_mark(no: int, pt: int) -> str:
 
 
 def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = False,
-            lead_w: float | None = None, cell: bool = False) -> str:
+            lead_w: float | None = None, cell: bool = False, force: bool = False) -> str:
     """본문(또는 표 칸) 한 줄. 둘째 줄부터는 항목 기호 뒤 글자에 맞춰 줄이 바뀌게(내어쓰기) 한다.
     예) '  가. 무주택 …'  → 왼쪽 여백 = '  ' (한글 1자), 첫 줄 뒤 줄은 '가. ' 실제 너비만큼 더 들어간다.
     lead_w: 들여쓰기 너비를 직접 줄 때(붙임 둘째 줄을 '붙임  ' 뒤 열에 맞출 때).
@@ -759,14 +759,39 @@ def _body_p(line: str, pt: int = FONT_PT, lh: str = LINE_HEIGHT, hwp: bool = Fal
         else:
             head_w = _units(head) * pt / 2
         mark = para_mark(lead_w, -head_w)   # 기호 없는 줄도 표식을 넣어 어절 단위 줄 나눔을 준다
-        return _p(mark + (_line_html(stripped) or "&nbsp;"), "left", pt, lh=lh)
-    return _p(escape(stripped) or "&nbsp;", "left", pt, left=lead_w + head_w, first=-head_w, lh=lh, pre=True)
+        return _p(mark + (_line_html(stripped, force) or "&nbsp;"), "left", pt, lh=lh)
+    return _p(emphasize(escape(stripped), force) or "&nbsp;", "left", pt, left=lead_w + head_w, first=-head_w, lh=lh, pre=True)
 
 
-def _line_html(line: str) -> str:
-    """들여쓰기와 중간의 연속 공백('붙임  1.')을 &nbsp;로 바꿔 살린다."""
+# ---------------- 중요한 날짜는 빨간 글씨 ----------------
+# 기한·기간·까지·마감·만료 등이 있는 줄(표는 그런 제목이 붙은 열도)의 날짜를 빨간 글씨로 쓴다.
+# '~'로 잇는 기간(2026. 11. 1. ~ 2026. 11. 30.)과 '…까지'는 한 덩어리로 칠한다.
+EMPH_COLOR = "#FF0000"
+EMPH_WORDS_RE = re.compile(r"기한|기간|까지|마감|만료|일시|일정|납부일|계약일|체결일|기일|퇴거|명도|유효")
+_WD = r"(?:\s?\([월화수목금토일]\))?"
+_TIME = r"(?:\s?\d{1,2}:\d{2})?"
+_ONE_DATE = (r"(?:\d{4}\.\s?\d{1,2}\.\s?\d{1,2}\.?|\d{4}년\s?\d{1,2}월\s?\d{1,2}일|"
+             r"(?<![\d.])\d{1,2}월\s?\d{1,2}일)" + _WD + _TIME)
+EMPH_DATE_RE = re.compile(_ONE_DATE + r"(?:\s*~\s*" + _ONE_DATE + r")?(?:\s?까지)?")
+
+
+def emphasize(text_html: str, force: bool = False) -> str:
+    """(이미 escape한) 한 줄에서 중요한 날짜를 빨간 글씨로 감싼다. force: 표에서 '기한' 열 칸."""
+    hot = force or bool(EMPH_WORDS_RE.search(text_html))
+
+    def sub(m):
+        t = m.group(0)
+        if not (hot or "~" in t or t.endswith("까지")):
+            return t
+        return (f'<font color="{EMPH_COLOR}"><span style="color:{EMPH_COLOR};">{t}</span></font>')
+    return EMPH_DATE_RE.sub(sub, text_html)
+
+
+def _line_html(line: str, force: bool = False) -> str:
+    """들여쓰기와 중간의 연속 공백('붙임  1.')을 &nbsp;로 바꿔 살린다. 중요한 날짜는 빨간 글씨."""
     stripped = line.lstrip(" ")
-    inner = re.sub(r" {2,}", lambda m: " " + "&nbsp;" * (len(m.group(0)) - 1), escape(stripped))
+    inner = re.sub(r" {2,}", lambda m: " " + "&nbsp;" * (len(m.group(0)) - 1),
+                   emphasize(escape(stripped), force))
     return "&nbsp;" * (len(line) - len(stripped)) + inner
 
 
@@ -833,6 +858,16 @@ def _table(lines: list[str], hwp: bool = False, no: int = 1) -> str:
            f'width:{sum(widths)}pt;">']
     f = _font(pt)
     marked = False
+    # 머리글에 기한·기간 등이 적힌 열(합친 칸은 그 열들 모두)
+    hot_cols = set()
+    for r in rows[:header_rows]:
+        for c, cell in enumerate(r):
+            if cell not in ("^", "<") and EMPH_WORDS_RE.search(cell):
+                hot_cols.add(c)
+                k = c + 1
+                while k < ncol and r[k] == "<":
+                    hot_cols.add(k)
+                    k += 1
     for ri, r in enumerate(rows):
         head = ri < header_rows
         out.append("<tr>")
@@ -846,6 +881,7 @@ def _table(lines: list[str], hwp: bool = False, no: int = 1) -> str:
             while ri + rowspan < len(rows) and rows[ri + rowspan][c] == "^":
                 rowspan += 1
             parts = [x for x in cell.split("<br>")]
+            hot = not head and any(k in hot_cols for k in range(c, c + colspan))
             longest = max((len(x.strip()) for x in parts), default=0)
             # 여러 칸을 합친 한 줄 제목(예: '2026년도 도시근로자 가구당 월평균 소득')도 가운데로
             align = ("center" if head or (longest <= 16 and len(parts) <= 3)
@@ -857,10 +893,10 @@ def _table(lines: list[str], hwp: bool = False, no: int = 1) -> str:
                         (f' rowspan="{rowspan}"' if rowspan > 1 else "")
             if align == "left":
                 # 왼쪽 정렬 칸은 줄마다 문단으로: 넘치는 줄이 □·*·- 기호 뒤 글자에 맞춰 바뀐다
-                body = "".join(_body_p(x, pt, CELL_LINE_HEIGHT, hwp, cell=True) for x in parts)
+                body = "".join(_body_p(x, pt, CELL_LINE_HEIGHT, hwp, cell=True, force=hot) for x in parts)
             else:
                 inner = "<br>".join(f'<span style="{f}"><font face="{FONT_FAMILY}">'
-                                    f'{_line_html(x) or "&nbsp;"}</font></span>' for x in parts)
+                                    f'{_line_html(x, hot) or "&nbsp;"}</font></span>' for x in parts)
                 body = f'<p align="{align}" style="text-align:{align};margin:0;{f}">{inner}</p>'
             if hwp and not marked:     # 첫 칸 앞에 표 글꼴 표식(apply_table_fonts가 지운다)
                 tag = f'<font face="{FONT_FAMILY}">'
@@ -881,8 +917,17 @@ ATTACH_GAP = 4    # 미리보기에서 '붙임' 뒤 빈칸 수: 굴림 빈칸 4�
 TAB_MARK = "【탭】"
 
 
-def to_html(body: str, hwp: bool = False) -> str:
-    """채운 본문 텍스트를 HTML로 바꾼다. hwp=True면 웹한글에 넣을 HTML(여백 대신 para_mark 표식)."""
+_EMPH_WRAP_RE = re.compile(r'<font color="#FF0000"><span style="color:#FF0000;">(.*?)</span></font>')
+
+
+def to_html(body: str, hwp: bool = False, emph: bool = True) -> str:
+    """채운 본문 텍스트를 HTML로 바꾼다. hwp=True면 웹한글에 넣을 HTML(여백 대신 para_mark 표식).
+    emph=False면 중요한 날짜도 빨간 글씨로 쓰지 않는다(내부결재)."""
+    html = _to_html(body, hwp)
+    return html if emph else _EMPH_WRAP_RE.sub(lambda m: m.group(1), html)
+
+
+def _to_html(body: str, hwp: bool = False) -> str:
     html, table = [], []
     n_table = 0
     attach = None      # (칸 수, 실제 너비) — 바로 위 '붙임  '

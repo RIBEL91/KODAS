@@ -28,6 +28,8 @@ import ui_kit
 VERSION = "1.4.0"
 FONT = (ui_kit.FONT, 10)
 FONT_B = (ui_kit.FONT, 10, "bold")
+# 수신자 엑셀 업로드 칸: 눈에 띄게 주황 테두리·연한 바탕
+UPLOAD_BG, UPLOAD_LINE, UPLOAD_FG = "#fff4e0", "#f59e0b", "#b45309"
 ACCENT = ui_kit.PRIMARY_D   # 새 디자인: 파랑 계열(진한 쪽)
 # 달력(DateEntry) 색: 앱의 파랑 계열. 주말은 붉은 글씨, 다른 달 날짜는 옅게
 CAL_STYLE = dict(
@@ -462,7 +464,7 @@ class App:
                      ("대장 문서 받기", "download", "green", self._collect_docs),
                      ("사용 방법", "help", "violet", self._show_help),
                      ("품질평가서 작성", "report", "teal", self._quality_menu),
-                     ("자격검증 기록", "list", "pink", self._verify_log))
+                     ("임대 담당자 자격검증 기록하기", "list", "pink", self._verify_log))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
                                        items=lambda: list(enumerate(self.templates)),
@@ -1274,20 +1276,23 @@ class App:
             if name not in picked:
                 continue
             # 둘째 줄: 이 안의 수신자 엑셀 (줄을 나눠 창이 좁아도 버튼이 잘리지 않게)
-            sub = ttk.Frame(parent)
-            sub.grid(row=row, column=0, columnspan=6, sticky="w", padx=(60, 8), pady=(0, 4))
-            ttk.Label(sub, text="수신자 엑셀").pack(side="left")
-            ttk.Button(sub, text="📎 고르기", command=lambda n=name: self._pick_option_upload(n)).pack(
-                side="left", padx=6)
+            sub = tk.Frame(parent, background=UPLOAD_BG, highlightthickness=2, highlightbackground=UPLOAD_LINE,
+                           padx=8, pady=4)
+            sub.grid(row=row, column=0, columnspan=6, sticky="w", padx=(60, 8), pady=(0, 6))
+            tk.Label(sub, text="📎 수신자 엑셀", font=FONT_B, foreground=UPLOAD_FG,
+                     background=UPLOAD_BG).pack(side="left")
+            ttk.Button(sub, text="📎 고르기", style="Accent.TButton",
+                       command=lambda n=name: self._pick_option_upload(n)).pack(side="left", padx=6)
             path = self.option_uploads.get(name, "")
             if path:
                 n = self.option_counts.get(name)
-                ttk.Label(sub, text=f"✅ {os.path.basename(path)}" + (f" ({n}세대)" if n is not None else ""),
-                          foreground="#1a7f37").pack(side="left")
+                tk.Label(sub, text=f"✅ {os.path.basename(path)}" + (f" ({n}세대)" if n is not None else ""),
+                         foreground="#1a7f37", background=UPLOAD_BG, font=FONT_B).pack(side="left")
                 ttk.Button(sub, text="빼기", command=lambda n=name: self._set_option_upload(n, "")).pack(
                     side="left", padx=4)
             else:
-                ttk.Label(sub, text="⚠ 아직 안 골랐습니다", foreground="#b45309").pack(side="left")
+                tk.Label(sub, text="⚠ 아직 안 골랐습니다", foreground="#b45309", background=UPLOAD_BG,
+                         font=FONT_B).pack(side="left")
             row += 1
         return row
 
@@ -1630,7 +1635,7 @@ class App:
             lbl.config(text="📒 자격검증 기록을 읽는 중…", foreground="#777")
             return
         if book is False:
-            lbl.config(text="📒 자격검증 기록을 읽지 못했습니다 — 바로가기 [자격검증 기록]을 확인해 주세요",
+            lbl.config(text="📒 자격검증 기록을 읽지 못했습니다 — 바로가기 [임대 담당자 자격검증 기록하기]를 확인해 주세요",
                        foreground="#777")
             return
         if not month:
@@ -1804,11 +1809,14 @@ class App:
         """여러 명에게 보낼 때: 홈넷 수기입력 [업로드]에 올릴 엑셀을 고른다."""
         self._help("수신자 엑셀 업로드: 여러 명에게 보낼 때 홈넷 [샘플 다운로드] 양식으로 작성한 엑셀을 고릅니다. "
                    "자동 작성 때 홈넷 수기입력 [업로드]로 올립니다.")
-        ttk.Label(parent, text="수신자 엑셀 업로드").grid(row=row, column=0, sticky="e", padx=8, pady=4)
-        box = ttk.Frame(parent)
-        box.grid(row=row, column=1, columnspan=5, sticky="w", padx=4)
-        ttk.Button(box, text="📎 업로드할 엑셀 고르기", command=self._pick_upload).pack(side="left")
-        self.upload_label = ttk.Label(box)
+        ttk.Label(parent, text="📎 수신자 엑셀 업로드", font=FONT_B, foreground=UPLOAD_FG).grid(
+            row=row, column=0, sticky="e", padx=8, pady=4)
+        box = tk.Frame(parent, background=UPLOAD_BG, highlightthickness=2, highlightbackground=UPLOAD_LINE,
+                       padx=8, pady=5)
+        box.grid(row=row, column=1, columnspan=5, sticky="w", padx=4, pady=3)
+        ttk.Button(box, text="📎 업로드할 엑셀 고르기", style="Accent.TButton", command=self._pick_upload).pack(
+            side="left")
+        self.upload_label = tk.Label(box, background=UPLOAD_BG, font=FONT_B)
         self.upload_label.pack(side="left", padx=8)
         self.upload_clear = ttk.Button(box, text="빼기", command=lambda: self._change_upload(""))
         self._set_upload(self.upload_path, refresh=False)
@@ -1848,7 +1856,7 @@ class App:
                                      foreground="#1a7f37")
             self.upload_clear.pack(side="left")
         else:
-            self.upload_label.config(text="")
+            self.upload_label.config(text="여러 명에게 보낼 때 여기서 엑셀을 고르세요", foreground=UPLOAD_FG)
             self.upload_clear.pack_forget()
         if refresh:
             self._refresh()
@@ -2089,7 +2097,8 @@ class App:
         for i, (title, receiver, body) in enumerate(self._all_filled()):
             path = os.path.join(paths.sub_dir("output"), "미리보기.html" if i == 0 else f"미리보기_{i + 1}안.html")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(dtpl.preview_html(title, receiver, dtpl.to_html(body)))
+                f.write(dtpl.preview_html(title, receiver,
+                                           dtpl.to_html(body, emph=receiver != dtpl.INTERNAL)))
             webbrowser.open("file:///" + path.replace("\\", "/"))
 
     def _doc_info(self, title: str) -> homnet_draft.DocInfo:
@@ -2153,7 +2162,7 @@ class App:
                 links = self._doc_links(d, dates)
                 for link in links:      # 관련 문서번호 자리는 홈넷 [문서링크]로 넣는다
                     b = b.replace(link.fallback, link.mark, 1)
-                parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b, hwp=True), up,
+                parts.append(homnet_draft.DraftPart(self._doc_info(t), r, dtpl.to_html(b, hwp=True, emph=not d.internal), up,
                                                     doc_links=links, external_receiver=d.external_receiver,
                                                     fit_spacing=getattr(self, "proof_on", False)))
         except ValueError as ex:
@@ -2843,7 +2852,7 @@ def selftest() -> int:
         receiver = dtpl.INTERNAL if t.internal else dtpl.fill_receiver(t.receiver, values)
         body = dtpl.fill(t.body, values, dates, t.extras)
         with open(os.path.join(out, t.file_name + ".html"), "w", encoding="utf-8") as f:
-            f.write(dtpl.preview_html(title, receiver, dtpl.to_html(body)))
+            f.write(dtpl.preview_html(title, receiver, dtpl.to_html(body, emph=not t.internal)))
     lines = [f"서식 {len(items)}개 변환, 오류 {len(errors)}개 → {out}"] + [f"  {e}" for e in errors]
     ok = not errors
     # 브라우저 자동화 점검: 홈넷 로그인 화면이 열리는지(로그인은 하지 않음)

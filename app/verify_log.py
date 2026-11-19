@@ -659,3 +659,142 @@ def store_delete(sheet: Sheet, row: int) -> None:
     data = store_load()
     data[sheet.key] = _renumber([r for r in data[sheet.key] if r["_row"] != row])
     store_save(data)
+
+
+# ---------------- 엑셀로 받기 · 엑셀 올려 적용 ----------------
+# 받은 파일은 관계철과 같은 모양(시트 이름·3줄 머리글·5줄부터 B열부터)이라, 그대로 고쳐서 다시 올리면 된다.
+DATE_FMT = "yyyy. m. d."
+
+
+def store_export_xlsx(path: str) -> int:
+    """지금 기록(세 시트)을 엑셀 파일로 쓴다. 쓴 줄 수."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    data = store_load()
+    wb = Workbook()
+    wb.remove(wb.active)
+    thin = Side(style="thin", color="A0A8B8")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="DCE6F5")
+    widths = {"text": 14, "date": 13, "num": 8, "total": 8, "status": 15, "memo": 50}
+    n = 0
+    for s in SHEETS:
+        ws = wb.create_sheet(s.name[:31])
+        ws.cell(1, FIRST_COL, s.name).font = Font(bold=True, size=13)
+        ws.cell(2, FIRST_COL, "※ 5줄부터 한 줄에 한 건. 칸 제목(3줄)과 시트 이름은 바꾸지 마세요 — "
+                "고친 뒤 KODAS [엑셀 올려 적용]으로 다시 올리면 됩니다.").font = Font(size=9, color="777777")
+        for i, f in enumerate(s.fields):
+            c = FIRST_COL + i
+            ws.merge_cells(start_row=HEAD_ROW, start_column=c, end_row=HEAD_ROW + 1, end_column=c)
+            h = ws.cell(HEAD_ROW, c, f.key)
+            h.font, h.fill, h.border = Font(bold=True), head_fill, box
+            h.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            ws.cell(HEAD_ROW + 1, c).border = box
+            ws.column_dimensions[get_column_letter(c)].width = widths[f.kind]
+        ws.column_dimensions["A"].width = 2
+        for j, rec in enumerate(data.get(s.key, [])):
+            r = FIRST_ROW + j
+            for i, f in enumerate(s.fields):
+                v = rec.get(f.key, "")
+                cell = ws.cell(r, FIRST_COL + i, None if v == "" else v)
+                cell.border = box
+                if isinstance(v, dt.date):
+                    cell.number_format = DATE_FMT
+                cell.alignment = Alignment(horizontal="left" if f.kind == "memo" else "center",
+                                           vertical="center", wrap_text=f.kind == "memo")
+            n += 1
+        ws.freeze_panes = ws.cell(FIRST_ROW, FIRST_COL)
+    wb.save(path)
+    return n
+
+
+def _from_xlsx(field: Field, v):
+    """openpyxl 칸 값 → 기록 값."""
+    if v is None:
+        return ""
+    if isinstance(v, dt.datetime):
+        return v.date()
+    if isinstance(v, dt.date):
+        return v
+    if field.kind == "date" and isinstance(v, (int, float)) and 20000 < v < 80000:
+        return (_EPOCH + dt.timedelta(days=float(v))).date()
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if isinstance(v, (int, float)):
+        return v
+    s = str(v).strip()
+    if field.kind == "date" and s:
+        return parse_date(s)
+    if field.kind in ("num", "total") and s:
+        return parse_num(s)
+    return s
+
+
+def _find_ws(wb, s: Sheet):
+    for ws in wb.worksheets:
+        if ws.title.strip() in (s.name[:31], s.name, s.key):
+            return ws
+    return None
+
+
+def read_xlsx(path: str) -> dict:
+    """[엑셀로 받기]와 같은 양식의 파일을 읽는다 → {시트 key: [기록 …]} (파일에 있는 시트만)."""
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(path, data_only=True)
+    except Exception as ex:
+        raise ExcelError(f"엑셀 파일을 열지 못했습니다: {ex}")
+    out = {}
+    for s in SHEETS:
+        ws = _find_ws(wb, s)
+        if ws is None:
+            continue
+        heads = [str(ws.cell(r, FIRST_COL).value or "").strip() for r in (HEAD_ROW, HEAD_ROW + 1)]
+        if "입주자격검색" not in heads:
+            raise ExcelError(f"'{ws.title}' 시트의 3줄 B칸이 '입주자격검색'이 아닙니다. "
+                             "[엑셀로 받기]로 받은 양식에 고쳐서 올려 주세요.")
+        rows = []
+        for r in range(FIRST_ROW, ws.max_row + 1):
+            rec = {f.key: _from_xlsx(f, ws.cell(r, FIRST_COL + i).value) for i, f in enumerate(s.fields)}
+            if all(v == "" for v in rec.values()):
+                continue
+            fix_years(s, rec)
+            if any(rec.get(k) not in ("", None) for k in COUNT_KEYS):
+                rec["총계"] = total_of(rec)
+            rows.append(rec)
+        out[s.key] = rows
+    if not out:
+        raise ExcelError("자격검증 기록 시트가 없습니다. 시트 이름이 다음 중 하나여야 합니다:\n"
+                         + "\n".join(s.name for s in SHEETS))
+    return out
+
+
+def backup_store() -> str:
+    """지금 기록(자격검증기록.json)을 백업 폴더에 복사해 둔다(없으면 '')."""
+    import shutil
+    import paths
+    src = store_path()
+    if not os.path.exists(src):
+        return ""
+    dst = os.path.join(paths.sub_dir("백업", "자격검증"), f"자격검증기록_{dt.datetime.now():%Y%m%d_%H%M%S}.json")
+    shutil.copy2(src, dst)
+    return dst
+
+
+def store_import_xlsx(path: str) -> dict:
+    """올린 엑셀로 기록을 바꾼다(파일에 있는 시트만 통째로 바꾸고, 없는 시트는 그대로). 먼저 백업.
+    돌려주는 것: {시트 key: 줄 수}."""
+    got = read_xlsx(path)
+    backup_store()
+    data = store_load()
+    for key, rows in got.items():
+        data[key] = _renumber(rows)
+    if OTHER.key not in got and RENEW.key in got:     # 명의변경 시트 없이 갱신 시트에 섞여 왔으면 나눈다
+        other = [r for r in data[RENEW.key] if not is_month(r.get("입주자격검색"))]
+        if other:
+            data[RENEW.key] = _renumber([r for r in data[RENEW.key] if is_month(r.get("입주자격검색"))])
+            data[OTHER.key] = _renumber(data[OTHER.key] + other)
+            got[OTHER.key] = other
+    store_save(data)
+    return {k: len(data[k]) for k in got}

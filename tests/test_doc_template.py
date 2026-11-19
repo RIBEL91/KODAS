@@ -302,3 +302,23 @@ def test_record_token():
     assert dtpl.fill("| {기록:총계=0} | {기록:세대주=0} |", {"기록:총계": "69"}, {}) == "| 69 | 0 |"
     t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("08_"))
     assert "{기록:총계=0}" in t.body and dtpl.RECORD_PREFIX in t._all_text()
+
+
+def test_important_dates_red():
+    """기한·기간·까지 등이 있는 줄의 날짜, '~' 기간은 빨간 글씨. 그 밖의 날짜는 그대로."""
+    import doc_template as dt_
+    red = 'color="#FF0000"'
+    h = dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지")
+    assert red in h and "2026. 11. 30.(월)까지</span></font>" in h
+    assert red not in dt_.to_html("  가. 제출서류: 2026. 11. 1.(안내문 시행일) 이후 발급분")
+    assert red in dt_.to_html("접수: 2026. 11. 1. ~ 2026. 11. 30.")
+    assert red in dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지", hwp=True)
+    t = dt_.to_html("| 구분 | 납부기한 |\n| 1회 | 2026.8.25 |\n| 비고 | 2026.9.1 |")
+    assert t.count(red) == 2
+
+
+def test_internal_no_red():
+    """내부결재(emph=False)는 빨간 글씨 없이."""
+    import doc_template as dt_
+    h = dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지", hwp=True, emph=False)
+    assert "FF0000" not in h and "2026. 11. 30.(월)까지" in h
