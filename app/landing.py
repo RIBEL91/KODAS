@@ -105,7 +105,8 @@ def _fmt_time(s: str) -> str:
 # ======================================================================
 class Sidebar(HitCanvas):
     NAV = (("home", "홈", "home"), ("write", "공문 작성", "edit"), ("picker", "서식 고르기", "layers"),
-           ("history", "작성 이력", "history"), None, ("settings", "환경 설정", "settings"))
+           ("history", "작성 이력", "history"), None, ("settings", "환경 설정", "settings"),
+           ("mydocs", "나의 공문 작성", "star"))
     # 단지기본정보는 처음 화면 바로가기·[파일] 메뉴·아래 관리소 카드에서 연다
 
     def __init__(self, parent, commands: dict, k: float, version: str = "", profile=None, on_profile=None):
@@ -158,11 +159,24 @@ class Sidebar(HitCanvas):
                          font=(FONT, fs(17, k), "bold"), fill=TEXT)
         self.create_text(lx + ls + 13 * k, ly + ls / 2 + 13 * k, anchor="w", text="공문 자동작성 시스템",
                          font=(FONT, fs(8.5, k, 8)), fill=SUB)
+        # 로고 밑: KODAS 뜻(머리글자 K·O·D·A·S는 진한 색) — KOhom Document Automation System
+        import tkinter.font as tkfont
+        px = -max(11, round(12.5 * k))
+        f_thin = tkfont.Font(family=FONT, size=px)
+        f_bold = tkfont.Font(family=FONT, size=px, weight="bold")
+        parts = (("KO", True), ("hom ", False), ("D", True), ("ocument ", False),
+                 ("A", True), ("utomation ", False), ("S", True), ("ystem", False))
+        total = sum((f_bold if s else f_thin).measure(p) for p, s in parts)
+        mx, my = max(10 * k, (w - total) / 2), ly + ls + 16 * k
+        for part, strong in parts:
+            f = f_bold if strong else f_thin
+            self.create_text(mx, my, anchor="w", text=part, font=f, fill=PRIMARY if strong else SUB)
+            mx += f.measure(part)
         # 로고(KODAS)를 누르면 홈으로
-        self.add_hit((14 * k, ly - 6 * k, w - 14 * k, ly + ls + 6 * k), self.commands.get("home"))
+        self.add_hit((14 * k, ly - 6 * k, w - 14 * k, my + 8 * k), self.commands.get("home"))
 
         # 메뉴
-        y = 112 * k
+        y = 122 * k
         ih = 48 * k
         for item in self.NAV:
             if item is None:
@@ -1119,7 +1133,7 @@ class HistoryScreen(tk.Frame):
         k = max(0.75, min(w / 1120, 1.4))
         _back_link(cv, w - 36, 30 * k, "←  처음 화면", self.on_home, k)
         _draw_title(cv, 36, 74 * k, k, "작", "성 이력",
-                    "홈넷에 자동 작성한 공문 기록입니다 (logs\\작성이력_년월.csv)")
+                    "홈넷에 자동 작성한 공문 기록 중 최근 한 달치입니다 (logs\\작성이력_년월.csv)")
         cv.config(height=int(112 * k))
 
     def show(self, rows: list):

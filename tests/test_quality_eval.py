@@ -70,13 +70,14 @@ def test_evidence_folders(tmp_path):
     _sheet(p)
     items = qe.load(p)
     root = qe.evidence_root(p)
-    os.makedirs(os.path.join(root, "1-1", "2. 예비입주자 정기검색", "예비자 없음"))     # 양식에 있던 폴더(이름 다름)
+    v4 = os.path.join(os.path.dirname(root), "폴더링 4권")
+    os.makedirs(os.path.join(v4, "1-1", "2. 예비입주자 정기검색", "예비자 없음"))     # 양식에 있던 폴더(이름 다름)
     made = qe.make_folders(root, items)
     assert made == len(items) - 1
     rent1 = items[3]
     d = qe.item_dir(root, rent1)
-    assert d == os.path.join(root, "1-1", "1. 예비입주자 모집인원 산정")              # 4권 범위는 폴더링 바로 아래
-    assert qe.item_dir(root, items[0]).startswith(os.path.join(root, "유지관리", "1-1"))
+    assert d == os.path.join(v4, "1-1", "1. 예비입주자 모집인원 산정")                # 4권은 '폴더링 4권'에 따로
+    assert qe.item_dir(root, items[0]).startswith(os.path.join(root, "1권 유지관리", "1-1"))
     with open(os.path.join(d, "1.jpg"), "wb") as f:
         f.write(b"x")
     qe.scan_evidence(root, items)
@@ -137,3 +138,17 @@ def test_auto_scores_match_prev_by_key():
     cur = [_it(no="1-1", basis="a"), _it(no="1-2", basis="b")]
     prev = [_it(no="1-2", score=0.5), _it(no="1-1", score=1)]
     assert [s for _i, s, _w in qe.auto_scores(cur, prev)] == [1, 0.5]
+
+
+def test_work_dir(tmp_path):
+    p = str(tmp_path / "평가표.xlsx")
+    work = os.path.join(str(tmp_path), "품질평가 작성")
+    assert qe.work_dir(p) == work
+    assert qe.evidence_root(p) == os.path.join(work, "폴더링")              # 폴더링은 '품질평가 작성' 안에
+    assert qe.volume_dir(qe.evidence_root(p), 4) == os.path.join(work, "폴더링 4권")
+
+
+def test_work_dir_no_nesting(tmp_path):
+    work = os.path.join(str(tmp_path), "품질평가 작성")
+    done = os.path.join(work, "평가표_완성본.xlsx")                       # 완성본을 다시 초안으로 넣어도
+    assert qe.work_dir(done) == work                                     # '품질평가 작성\품질평가 작성'이 되지 않음

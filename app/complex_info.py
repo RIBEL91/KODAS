@@ -9,7 +9,8 @@
 import re
 
 PREFIX = "단지:"
-MAX_TYPES = 6          # 평형(전용면적) 칸 수
+MAX_TYPES = 6          # 평형(전용면적) 칸 기본 수 — [➕ 평형 추가]로 TYPE_LIMIT까지 늘린다
+TYPE_LIMIT = 20        # 평형 칸 최대 수
 
 # (키, 화면 이름, 처음 값, 설명) — 처음 값은 서식을 만든 광주우산3 기준
 BASIC = [
@@ -90,12 +91,21 @@ def extra_items(text: str) -> dict:
     return out
 
 
+def type_count(info: dict | None) -> int:
+    """평형 칸 수: 기본 6칸, 그보다 뒤 칸(평형7 …)에 값이 있으면 그 칸까지."""
+    n = MAX_TYPES
+    for i in range(MAX_TYPES + 1, TYPE_LIMIT + 1):
+        if str((info or {}).get(f"평형{i}", "") or "").strip() or str((info or {}).get(f"평형{i}세대수", "") or "").strip():
+            n = i
+    return n
+
+
 def resolve(info: dict) -> dict:
     """저장된 단지기본정보 → 서식에 넣을 값 전체(자동 계산 값 포함). 키에는 '단지:'를 붙이지 않는다."""
     info = {**defaults(), **(info or {})}
     out = {k: str(info.get(k, "") or "").strip() for k, *_ in BASIC + ACCOUNT}
     types = []
-    for i in range(1, MAX_TYPES + 1):
+    for i in range(1, type_count(info) + 1):
         area = str(info.get(f"평형{i}", "") or "").strip().replace("㎡", "")
         n = str(info.get(f"평형{i}세대수", "") or "").strip()
         out[f"평형{i}"], out[f"평형{i}세대수"] = area, (f"{int(_num(n)):,}" if n else "")
@@ -114,6 +124,6 @@ def resolve(info: dict) -> dict:
 
 def all_names() -> list[str]:
     names = [k for k, *_ in BASIC + ACCOUNT]
-    for i in range(1, MAX_TYPES + 1):
+    for i in range(1, TYPE_LIMIT + 1):
         names += [f"평형{i}", f"평형{i}세대수"]
     return names + [k for k, _ in DERIVED]

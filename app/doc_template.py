@@ -72,12 +72,12 @@ COMPLEX: dict[str, str] = {}
 
 
 def choice_source(spec: str) -> list[str]:
-    """{선택:이름=…}의 고를 것들. '36|46|51'은 그대로, '단지:평형'은 단지기본정보 평형1~6의 값."""
+    """{선택:이름=…}의 고를 것들. '36|46|51'은 그대로, '단지:평형'은 단지기본정보 평형칸의 값."""
     s = (spec or "").strip()
     if s.startswith(COMPLEX_PREFIX):
         name = s[len(COMPLEX_PREFIX):].split("|")[0].strip()
         if name == "평형":
-            vals = [COMPLEX.get(f"평형{i}", "").strip() for i in range(1, 7)]
+            vals = [COMPLEX.get(f"평형{i}", "").strip() for i in range(1, 21)]     # 평형 추가로 20칸까지
         else:
             vals = COMPLEX.get(name, "").split(",")
         return [v.strip() for v in vals if v.strip()]
@@ -920,10 +920,22 @@ TAB_MARK = "【탭】"
 _EMPH_WRAP_RE = re.compile(r'<font color="#FF0000"><span style="color:#FF0000;">(.*?)</span></font>')
 
 
+# 본문 날짜 '2026. 11. 12.'가 띄어쓰기 자리에서 줄이 바뀌지 않게 '2026.11.12.'로 붙인다(2026-11-20 요청).
+# 웹한글은 &nbsp;(줄바꿈 없는 빈칸)를 보통 빈칸으로 바꿔 버려서 붙여 쓴다.
+_GAP = r"(?:\s|&nbsp;|&#160;)+"
+_DATE_FULL_RE = re.compile(r"(?<!\d)(\d{4})\." + _GAP + r"(\d{1,2})\." + _GAP + r"(\d{1,2})\.")
+_DATE_YM_RE = re.compile(r"(?<!\d)(\d{4})\." + _GAP + r"(\d{1,2})\.(?![\d.])")
+
+
+def keep_dates_together(html: str) -> str:
+    html = _DATE_FULL_RE.sub(lambda m: f"{m[1]}.{m[2]}.{m[3]}.", html)
+    return _DATE_YM_RE.sub(lambda m: f"{m[1]}.{m[2]}.", html)
+
+
 def to_html(body: str, hwp: bool = False, emph: bool = True) -> str:
     """채운 본문 텍스트를 HTML로 바꾼다. hwp=True면 웹한글에 넣을 HTML(여백 대신 para_mark 표식).
-    emph=False면 중요한 날짜도 빨간 글씨로 쓰지 않는다(내부결재)."""
-    html = _to_html(body, hwp)
+    emph=False면 중요한 날짜도 빨간 글씨로 쓰지 않는다(내부결재). 날짜는 한 줄에 들어가게 붙여 쓴다."""
+    html = keep_dates_together(_to_html(body, hwp))
     return html if emph else _EMPH_WRAP_RE.sub(lambda m: m.group(1), html)
 
 

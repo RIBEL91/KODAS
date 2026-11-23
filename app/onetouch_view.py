@@ -186,8 +186,10 @@ class OneTouchDialog(tk.Toplevel):
     # ---------------- 채우기 ----------------
     def _fill(self, res: wise_rent.Result):
         a = self.app
-        types = res.types[:complex_info.MAX_TYPES]
-        for i in range(1, complex_info.MAX_TYPES + 1):
+        types = res.types[:complex_info.TYPE_LIMIT]
+        while a.type_n < len(types) and a._add_type_row():     # 평형이 많으면 칸을 늘린다
+            pass
+        for i in range(1, a.type_n + 1):
             area, units = (types[i - 1][0], str(types[i - 1][1])) if i <= len(types) else ("", "")   # 전용면적
             for key, val in ((f"평형{i}", area), (f"평형{i}세대수", units)):
                 e = a.complex_entries[key]
@@ -216,14 +218,14 @@ class OneTouchDialog(tk.Toplevel):
             tv.heading(c, text=t)
             tv.column(c, width=w, anchor="e" if c != "no" else "center")
         for i, (area, units, *_) in enumerate(res.types, 1):
-            tv.insert("", "end", values=(f"평형{i}" if i <= complex_info.MAX_TYPES else "넘침", area, units))
+            tv.insert("", "end", values=(f"평형{i}" if i <= complex_info.TYPE_LIMIT else "넘침", area, units))
         tv.pack(anchor="w", pady=(10, 4))
         total = sum(t[1] for t in res.types)
         ttk.Label(self.body, text=f"합계 {total:,}세대 (총세대수 칸이 비어 있으면 이 합계가 들어갑니다)",
                   foreground="#555").pack(anchor="w")
-        if len(res.types) > complex_info.MAX_TYPES:
+        if len(res.types) > complex_info.TYPE_LIMIT:
             ttk.Label(self.body, foreground="#c62828",
-                      text=f"⚠ 평형이 {len(res.types)}개라 앞의 {complex_info.MAX_TYPES}개만 칸에 넣었습니다.").pack(
+                      text=f"⚠ 평형이 {len(res.types)}개라 앞의 {complex_info.TYPE_LIMIT}개만 칸에 넣었습니다.").pack(
                 anchor="w", pady=(4, 0))
         self._buttons(("닫기", self.destroy, True))
 

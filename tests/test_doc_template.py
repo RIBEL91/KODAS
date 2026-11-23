@@ -309,7 +309,7 @@ def test_important_dates_red():
     import doc_template as dt_
     red = 'color="#FF0000"'
     h = dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지")
-    assert red in h and "2026. 11. 30.(월)까지</span></font>" in h
+    assert red in h and "2026.11.30.(월)까지</span></font>" in h
     assert red not in dt_.to_html("  가. 제출서류: 2026. 11. 1.(안내문 시행일) 이후 발급분")
     assert red in dt_.to_html("접수: 2026. 11. 1. ~ 2026. 11. 30.")
     assert red in dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지", hwp=True)
@@ -321,4 +321,13 @@ def test_internal_no_red():
     """내부결재(emph=False)는 빨간 글씨 없이."""
     import doc_template as dt_
     h = dt_.to_html("  나. 제출기한: 2026. 11. 30.(월)까지", hwp=True, emph=False)
-    assert "FF0000" not in h and "2026. 11. 30.(월)까지" in h
+    assert "FF0000" not in h and "2026.11.30.(월)까지" in h
+
+
+def test_dates_kept_on_one_line():
+    """본문 날짜는 띄어쓰기 없이 붙여 줄이 나뉘지 않게(2026. 11. 12. → 2026.11.12.)."""
+    import doc_template as dt_
+    h = dt_.to_html("1. 주거복지실-2404(2026.10.14.) 호와 범정부 자동연계 조사완료일(2026. 11. 12.) 건 관련입니다.", hwp=True)
+    assert "(2026.11.12.)" in h and "2026. 11." not in h
+    assert dt_.keep_dates_together("1. 2. 3.") == "1. 2. 3."
+    assert dt_.keep_dates_together("2026. 11. 까지") == "2026.11. 까지"

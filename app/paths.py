@@ -1,8 +1,11 @@
 """프로그램 폴더·사용자 데이터 폴더 경로.
 
-exe(PyInstaller onefile, 영철ai\\KODAS.exe)는 파일 하나만 옮겨도 그대로 쓰이도록
-자기 옆에 아무것도 두지 않는다.
-- 설정·서식·작업 기록·미리보기·받은 대장 문서: %APPDATA%\\공문작성기 (exe를 어디에 두든 유지)
+exe(PyInstaller onefile, 영철ai/KODAS/KODAS.exe)는 자기 옆 'KODAS 데이터' 폴더에 모든 기록을 둔다
+(2026-11-20: 인사이동 때 KODAS 폴더만 압축해 가져가면 서식·설정·일정·기록이 그대로 따라가게).
+- 설정·서식·작업 기록·미리보기·받은 대장 문서·일정표·나의 공문: KODAS.exe 옆 'KODAS 데이터'
+  (그 폴더에 쓸 수 없으면 예전처럼 %APPDATA%/공문작성기)
+- 예전 버전이 %APPDATA%/공문작성기에 둔 기록은 처음 한 번 'KODAS 데이터'로 복사한다(원본은 그대로 둔다)
+- 홈넷·VPN 계정은 PC마다 다른 키로 암호화돼 있어 다른 PC에서는 다시 넣어야 한다(settings_store)
 - 기본 서식은 exe 안에 들어 있고, 실행할 때 사용자 서식 폴더로 맞춰 꺼낸다(sync_templates)
 소스로 실행할 때는 저장소 폴더(서식, logs, output, 수집)를 그대로 쓴다.
 """
@@ -30,11 +33,79 @@ def bundle_dir() -> str:
     return getattr(sys, "_MEIPASS", None) or program_dir()
 
 
+PORTABLE_NAME = "KODAS 데이터"
+SKIP_COPY = ("browser",)          # PC마다 다른 브라우저 임시 자료는 옮기지 않는다
+_USER_DIR = None
+
+
+def legacy_dir() -> str:
+    """예전 버전의 기록 폴더(%APPDATA%/공문작성기)."""
+    return os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
+
+
+def _writable(folder: str) -> bool:
+    try:
+        os.makedirs(folder, exist_ok=True)
+        test = os.path.join(folder, ".쓰기확인")
+        with open(test, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test)
+        return True
+    except OSError:
+        return False
+
+
+def migrate(old: str, new: str) -> bool:
+    """예전 기록 폴더(old)를 새 폴더(new)로 한 번 복사한다. new에 이미 설정이 있으면 하지 않는다."""
+    if not os.path.isdir(old) or os.path.exists(os.path.join(new, "settings.json")):
+        return False
+    os.makedirs(new, exist_ok=True)
+    for name in os.listdir(old):
+        if name in SKIP_COPY:
+            continue
+        s, d = os.path.join(old, name), os.path.join(new, name)
+        try:
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            elif not os.path.exists(d):
+                shutil.copy2(s, d)
+        except OSError:
+            pass
+    sp = os.path.join(new, "settings.json")           # 설정 속 예전 폴더 경로(디자인 사진 등)를 새 폴더로
+    try:
+        with open(sp, encoding="utf-8") as f:
+            text = f.read()
+        for a, b in ((old, new), (old.replace(os.sep, "/"), new.replace(os.sep, "/"))):
+            text = text.replace(json.dumps(a, ensure_ascii=False)[1:-1], json.dumps(b, ensure_ascii=False)[1:-1])
+        with open(sp, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        pass
+    return True
+
+
 def user_dir() -> str:
-    base = os.getenv("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, APP_NAME)
+    """기록 폴더. exe는 KODAS.exe 옆 'KODAS 데이터'(쓸 수 없으면 %APPDATA%/공문작성기), 소스 실행은 %APPDATA%."""
+    global _USER_DIR
+    if _USER_DIR and os.path.isdir(_USER_DIR):
+        return _USER_DIR
+    path = legacy_dir()
+    if frozen():
+        portable = os.path.join(program_dir(), PORTABLE_NAME)
+        if _writable(portable):
+            migrate(legacy_dir(), portable)
+            path = portable
     os.makedirs(path, exist_ok=True)
+    _USER_DIR = path
     return path
+
+
+def data_file(path: str) -> str:
+    """설정에 적힌 기록 폴더 안 파일 경로를 지금 기록 폴더 기준으로(폴더째 옮긴 뒤에도 찾게)."""
+    if not path or os.path.isfile(path):
+        return path
+    alt = os.path.join(user_dir(), os.path.basename(path))
+    return alt if os.path.isfile(alt) else path
 
 
 def data_dir() -> str:

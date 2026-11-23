@@ -51,6 +51,7 @@ class Doc:
     title: str
     date: dt.date | None
     key: str = ""
+    to: str | None = None          # 수신자(발신자) 칸. '' = 내부결재, None = 모름(예전에 저장한 목록)
 
     def __post_init__(self):
         if not self.key:
@@ -164,7 +165,10 @@ def parse_ledger_rows(rows: list[dict], office_hint: str = "") -> list[Doc]:
         m = re.search(r"<CREATE_REG_DATE>(\d{8})\d{6}</CREATE_REG_DATE>", ud)
         stamp = m[1] if m else next((t[:8] for t in texts if re.fullmatch(r"\d{14}", t)), "")
         date = dt.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8])) if stamp else None
-        docs.append(Doc(seq=int(NUM_RE.match(number)["seq"]), number=number, title=title, date=date))
+        to = texts[idx + 3] if idx + 3 < len(texts) else None      # 문서번호·제목·담당자 다음이 수신자(발신자)
+        if to is not None and to.lower() == "null":
+            to = ""
+        docs.append(Doc(seq=int(NUM_RE.match(number)["seq"]), number=number, title=title, date=date, to=to))
     return docs
 
 
@@ -697,6 +701,68 @@ def _common_style(items, year: int) -> Ref:
     return Ref(**{**base.__dict__, "pre": pre, "presep": presep, "space": space, "pad": pad, "dot": dot, "ylen": ylen})
 
 
+def internal_only(it) -> bool:
+    """평가 근거에 내부결재 문서번호만 적는 항목(2026-11-20 사용자): 4권 1-2 임대차 계약 업무."""
+    if getattr(it, "no", "") != "1-2":
+        return False
+    try:
+        import quality_eval as qe
+        return qe.volume_of(getattr(it, "part", "")) == 4
+    except Exception:
+        return False
+
+
+def internal_numbers(basis: str, ledgers: dict, year: int) -> str:
+    """근거 줄 가운데 내부결재(수신자 없음) 문서만 남기고 '번호 제목'으로 한 줄씩 적는다
+    ('3월-126(26.01.19) 2026년 3월 갱신계약 대상세대 계약 체결 안내문').
+    수신자를 모르는 문서(예전 목록)는 그대로 둔다. 문서번호가 없는 줄(화면 캡처 등)은 둔다."""
+    by = {(y, d.seq): d for y, docs in ledgers.items() for d in docs}
+    out = []
+    for line in (basis or "").split("\n"):
+        if not line.strip() or line.startswith(MISS_MARK):
+            continue
+        refs = parse_refs(line, year)
+        if not refs:
+            out.append(line)
+            continue
+        for r in refs:
+            d = by.get((r.date.year, r.seq))
+            if d is not None and d.to not in (None, ""):
+                continue                                  # 입주자 등에게 보낸 문서 — 빼기
+            title = d.title if d is not None else (r.desc or "")
+            out.append(f"{r.raw} {title}".strip())
+    return "\n".join(dict.fromkeys(out))
+
+
+def half_year_result(t: str) -> bool:
+    """예비자 정기 주택소유 '심사 결과' 공문(상·하반기) — 예: '주택소유 심사 결과(26년 예비자 정기(상), 29차)'.
+    전산검색 결과 통보·의뢰·소명결과는 빼고, 예전 제목 '입주자격심사 결과(2025년 상반기 예비자정기, 30차)'도 본다."""
+    s = re.sub(r"\s+", "", t or "")
+    return ("심사결과" in s and "예비자" in s and "정기" in s
+            and not any(x in s for x in ("소명결과", "통보", "의뢰", "전산검색")))   # '소명대상 없음'은 넣는다
+
+
+def result_numbers(it, ledgers: dict, cur_year: int) -> str:
+    """4권 1-1 예비입주자 주택소유 정기 검색: 평가년도 대장의 '주택소유 심사 결과' 상·하반기 공문 번호만
+    (2026-11-20 사용자, 폴더링 evidence_fetch.DOC_RULES와 같은 문서). 예: '264(26.2.9.)\\n1435(26.7.29.)'."""
+    if getattr(it, "no", "") != "1-1" or "정기" not in (getattr(it, "text", "") or ""):
+        return ""
+    docs = ledgers.get(cur_year) or []
+    if not docs:
+        return ""
+    hits = sorted((d for d in docs if d.date and half_year_result(d.title)), key=lambda d: (d.date, d.seq))
+    return "\n".join(f"{d.seq}({d.date:%y}.{d.date.month}.{d.date.day}.) {d.title}" for d in hits)
+
+
+def fixed_basis(it, cur_year: int) -> str:
+    """대장 공문 대신 정해진 증빙을 적는 항목(2026-11-20 사용자): 4권 1-1 예비입주자 모집인원 산정은
+    '모집공고 계획 수립' 공문이 아니라 자료집계(제출완료함)에 낸 취합자료 엑셀 — 폴더링이 그 엑셀을 받아
+    우리 단지 줄만 찍는다(evidence_fetch.MOUMI_SOURCES)."""
+    if getattr(it, "no", "") == "1-1" and "모집인원" in (getattr(it, "text", "") or ""):
+        return f"취합자료 엑셀파일 첨부: {cur_year}년 LH건설임대주택 예비입주자 모집공고 계획 수립 취합(자료집계 제출완료함)"
+    return ""
+
+
 def make_draft(prev_items, cur_items, prev_year: int, cur_year: int, ledgers: dict,
                only=None, with_title: bool = True, promos: bool = True, extras=()) -> list[tuple]:
     """초안 항목(cur_items)의 근거를 채운다. only(항목→bool)로 범위를 줄일 수 있다.
@@ -713,6 +779,12 @@ def make_draft(prev_items, cur_items, prev_year: int, cur_year: int, ledgers: di
     out = []
     for it in cur_items:
         if only and not only(it):
+            continue
+        fixed = result_numbers(it, ledgers, cur_year)     # 1-1 모집인원 산정은 원래대로(사용자 2026-11-20)
+        if fixed:                                  # 대장 공문이 아니라 정해진 증빙(취합자료 엑셀 등)
+            if it.basis != fixed:
+                it.basis, it.flag, it.added = fixed, False, [fixed]
+                out.append((it, Result(basis=fixed)))
             continue
         p = prev_by.get(_match_key(it))
         if p is None or similar_key(p.text) != similar_key(it.text):
@@ -754,6 +826,8 @@ def make_draft(prev_items, cur_items, prev_year: int, cur_year: int, ledgers: di
                                if not x.startswith(LACK_PREFIX) and SUP_LACK_MARK not in x).strip()   # 직접 적은 사유는 살린다
         miss = [f"{MISS_MARK}작년에 있고 올해 없음: {x}" for x in dict.fromkeys(res.lacking)] + sup_miss
         body = res.basis or strip_miss(getattr(it, "basis", "") or "")
+        if internal_only(it):
+            body = internal_numbers(body, ledgers, cur_year)
         new_basis = "\n".join(x for x in [body] + miss if x)
         added = [x for x in body.split("\n") if x and x not in from_prev] if res.basis else list(getattr(it, "added", []))
         flag = bool(miss)
@@ -771,12 +845,16 @@ def strip_miss(basis: str) -> str:
     return "\n".join(x for x in (basis or "").split("\n") if not x.startswith(MISS_MARK)).strip()
 
 
+CACHE_V = 2        # 2: 수신자 칸까지 저장(내부결재 가리기) — 예전 목록은 한 번 다시 읽는다
+
+
 def docs_to_json(docs: list[Doc]) -> list:
-    return [[d.seq, d.number, d.title, d.date.isoformat() if d.date else ""] for d in docs]
+    return [[d.seq, d.number, d.title, d.date.isoformat() if d.date else "", d.to] for d in docs]
 
 
 def docs_from_json(rows: list) -> list[Doc]:
-    return [Doc(seq=r[0], number=r[1], title=r[2], date=dt.date.fromisoformat(r[3]) if r[3] else None)
+    return [Doc(seq=r[0], number=r[1], title=r[2], date=dt.date.fromisoformat(r[3]) if r[3] else None,
+                to=r[4] if len(r) > 4 else None)
             for r in rows]
 
 
@@ -793,15 +871,53 @@ def cached_ledgers(years, cache_dir: str):
                 c = json.load(f)
         except (OSError, ValueError):
             return None
-        if not c.get("docs") or not (y < today.year or c.get("date") == today.isoformat()):
+        if not c.get("docs"):
             return None
+        if y >= today.year and not (c.get("date") == today.isoformat() and c.get("v") == CACHE_V):
+            return None                              # 올해 목록은 그날 새로 붙인 것만(뒤에 만든 문서가 있을 수 있음)
         out[y] = docs_from_json(c["docs"])
     return out
 
 
+def _save_cache(cache: str, docs: list) -> None:
+    import json
+    with open(cache, "w", encoding="utf-8") as f:
+        json.dump({"v": CACHE_V, "date": dt.date.today().isoformat(), "docs": docs_to_json(docs)}, f,
+                  ensure_ascii=False)
+
+
+def _new_rows(driver, year: int, known: set, log=print, stop=None) -> list[dict]:
+    """대장 year년 목록을 첫 쪽(최근 등록)부터 읽다가 이미 저장한 문서가 나오는 쪽에서 멈춘다(새로 만든 것만)."""
+    import ledger
+    ledger.open_register(driver)
+    ledger.select_year(driver, year)
+    pages = ledger.total_pages(driver)
+    rows = ledger.list_rows(driver)
+    page = 1
+    while page < pages and not any(_row_number(r) in known for r in rows[-50:]):
+        if stop is not None and stop.is_set():
+            break
+        page += 1
+        rows += ledger.go_page(driver, page, "")
+    driver.switch_to.default_content()
+    log(f"  {year}년 대장: {page}쪽까지 읽어 새 문서를 찾았습니다.")
+    return rows
+
+
+def _row_number(row: dict) -> str:
+    for t in row.get("text", []):
+        t = str(t).strip()
+        if NUM_RE.match(t) and "-" in t:
+            return t
+    return ""
+
+
 def load_ledgers(driver, years, cache_dir: str, log=print, stop=None, office: str = "") -> tuple[dict, list]:
-    """홈넷 기록물등록대장에서 years 해의 문서 목록을 읽는다(읽기만). 지난해 목록은 저장해 두고 다시 쓰고,
-    올해 목록은 그날 처음 한 번만 새로 읽는다. 돌려주는 값: ({연도: [Doc]}, 대장이 없던 해들)."""
+    """홈넷 기록물등록대장에서 years 해의 문서 목록을 읽는다(읽기만). 한 번 읽은 목록은 저장해 두고 계속 쓴다
+    (2026-11-20 사용자 "한번 스캔했으면 기록 유지하고 추후에 만든 것만 추가로"): 지난해 목록은 그대로,
+    올해 목록은 그날 처음 한 번 '저장한 뒤에 새로 등록된 문서'만 앞쪽에서 읽어 붙인다.
+    올해 목록이 수신자 칸 없이 저장된 예전 것(CACHE_V 1)이면 내부결재를 가리려고 한 번만 다시 다 읽는다.
+    돌려주는 값: ({연도: [Doc]}, 대장이 없던 해들)."""
     import json
     import os
 
@@ -810,17 +926,33 @@ def load_ledgers(driver, years, cache_dir: str, log=print, stop=None, office: st
     ledgers, missing_years = {}, []
     for y in sorted(years):
         cache = os.path.join(cache_dir, f"{y}.json")
+        c = {}
         try:
             with open(cache, encoding="utf-8") as f:
                 c = json.load(f)
-            if (y < today.year or c.get("date") == today.isoformat()) and c.get("docs"):
-                ledgers[y] = docs_from_json(c["docs"])
-                log(f"  {y}년 대장: 저장해 둔 목록 사용 ({len(ledgers[y])}건)")
-                continue
         except (OSError, ValueError):
             pass
+        old = docs_from_json(c["docs"]) if c.get("docs") else []
+        if old and (y < today.year or (c.get("date") == today.isoformat() and c.get("v") == CACHE_V)):
+            ledgers[y] = old
+            log(f"  {y}년 대장: 저장해 둔 목록 사용 ({len(old)}건)")
+            continue
         if stop is not None and stop.is_set():
             break
+        if old and c.get("v") == CACHE_V:              # 올해: 새로 등록된 것만 붙인다
+            known = {d.number for d in old}
+            try:
+                rows = _new_rows(driver, y, known, log, stop)
+            except ledger.LedgerError as ex:
+                log(f"  ⚠️ {ex} — 저장해 둔 목록을 씁니다.")
+                ledgers[y] = old
+                continue
+            new = [d for d in parse_ledger_rows(rows, office) if d.number not in known]
+            ledgers[y] = new + old
+            if not (stop is not None and stop.is_set()):
+                _save_cache(cache, ledgers[y])
+            log(f"  {y}년 대장: 저장해 둔 {len(old)}건 + 새 문서 {len(new)}건")
+            continue
         try:
             rows = ledger.year_rows(driver, y, log, stop)
         except ledger.LedgerError as ex:
@@ -831,7 +963,6 @@ def load_ledgers(driver, years, cache_dir: str, log=print, stop=None, office: st
         docs = parse_ledger_rows(rows, office)
         ledgers[y] = docs
         if docs and not (stop is not None and stop.is_set()):
-            with open(cache, "w", encoding="utf-8") as f:
-                json.dump({"date": today.isoformat(), "docs": docs_to_json(docs)}, f, ensure_ascii=False)
+            _save_cache(cache, docs)
         log(f"  {y}년 대장 {len(docs)}건을 읽었습니다.")
     return ledgers, missing_years

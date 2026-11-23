@@ -113,6 +113,11 @@ def _fmt(v) -> str:
     return f"{v:g}"
 
 
+def _blank(it) -> bool:
+    """점수를 아직 넣지 않은 항목(가감점은 해당 없으면 비워 두는 게 보통이라 뺀다)."""
+    return it.score is None and it.part != "가감점"
+
+
 def _cache_dir() -> str:
     d = os.path.join(paths.user_dir(), "품질평가_대장")
     os.makedirs(d, exist_ok=True)
@@ -217,11 +222,13 @@ class SheetPicker(tk.Toplevel):
 
 
 class QualityDialog(tk.Toplevel):
-    def __init__(self, master, cfg: dict, k: float = 1.0, log=None, homnet_run=None):
-        """homnet_run(job, on_ok, on_err): 홈넷에 로그인한 뒤 job(driver, log)를 작업 스레드에서 돌린다."""
+    def __init__(self, master, cfg: dict, k: float = 1.0, log=None, homnet_run=None, on_report=None):
+        """homnet_run(job, on_ok, on_err): 홈넷에 로그인한 뒤 job(driver, log)를 작업 스레드에서 돌린다.
+        on_report(path): [한글파일 만들기] — 이 창을 닫고 한글파일 작성 창을 그 초안으로 연다."""
         super().__init__(master)
         self.cfg, self.k, self.log = cfg, k, log or (lambda _m: None)
         self.homnet_run = homnet_run
+        self.on_report = on_report
         self.title("품질평가서 작성")
         self.geometry(f"{int(1200 * k)}x{int(780 * k)}")
         self.minsize(int(940 * k), int(620 * k))
@@ -236,6 +243,7 @@ class QualityDialog(tk.Toplevel):
         self.cur: qe.Item | None = None
         self.part = tk.StringVar(value=ALL)       # 처음엔 전체 항목, [내 항목 고르기]로 담당자별 항목만 볼 수 있다
         self.only_missing = tk.BooleanVar(value=False)
+        self.only_blank = tk.BooleanVar(value=False)
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(50, self._open_first)
@@ -259,13 +267,18 @@ class QualityDialog(tk.Toplevel):
         ttk.Button(bar, text="점수 자동 매기기", command=self._auto_score).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(bar, text="증빙 없는 항목만", variable=self.only_missing,
                         command=self._fill).pack(side="left", padx=10)
+        ttk.Checkbutton(bar, text="점수 안 넣은 항목만", variable=self.only_blank,
+                        command=self._fill).pack(side="left")
         self.sum_lbl = ttk.Label(bar, font=(F, 10, "bold"))
         self.sum_lbl.pack(side="right")
 
         body = ttk.PanedWindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=14)
-        left = ttk.Frame(body)
-        cols = ("no", "item", "max", "score", "ev", "basis")
+        # 틀 크기를 고정해 둔다: 평가 근거 열이 긴 글에 맞춰 넓어져도(_fit_basis) 목록이 창을 다 차지해
+        # 오른쪽 [파일 넣기] 칸을 밀어내지 않게 — 긴 근거는 목록 안 가로 스크롤바로 본다.
+        left = ttk.Frame(body, width=int(660 * self.k), height=int(400 * self.k))
+        left.grid_propagate(False)
+        cols =("no", "item", "max", "score", "ev", "basis")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
         for c, t, w, a in (("no", "번호", 56, "center"), ("item", "평가항목", 290, "w"), ("max", "배점", 50, "center"),
                            ("score", "점수", 50, "center"), ("ev", "증빙", 76, "center"),
@@ -278,6 +291,7 @@ class QualityDialog(tk.Toplevel):
         self.tree.tag_configure("drafted", background="#fff6d6")
         self.tree.tag_configure("lack", background="#ffe1e1")     # 작년과 비교해 없는 문서가 있는 항목(옅은 빨강)
         self.tree.tag_configure("auto", foreground="#1d4ed8")      # [점수 자동 매기기]로 넣은 점수(파란 글씨)
+        self.tree.tag_configure("noscore", font=(F, 10, "bold"))    # 점수 안 넣은 항목(굵은 글씨 + 점수 칸 '미입력')
         sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         xsb = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=sb.set, xscrollcommand=xsb.set)
@@ -324,7 +338,7 @@ class QualityDialog(tk.Toplevel):
         self.prev_lbl = self._slot(right, "작년도 초안", "평가 근거 기입란이 적혀 있는 품질평가 초안 엑셀",
                                    self._choose_prev, lambda: self._startfile(self.prev_path), self._clear_prev)
         # 근거 보태기: 최근 5개년도 작성분 엑셀을 5개까지
-        ebox = ttk.LabelFrame(right, text=f" 최근 5개년도 작성분 (근거 보태기, 최대 {MAX_EXTRA}개) ", padding=(10, 6))
+        ebox = ttk.LabelFrame(right, text=f" 최근 5개년도 작성분 (선택 · 없어도 초안 작성 가능, 최대 {MAX_EXTRA}개) ", padding=(10, 6))
         ebox.pack(fill="x", pady=(12, 0))
         etop = ttk.Frame(ebox)
         etop.pack(fill="x")
@@ -360,14 +374,18 @@ class QualityDialog(tk.Toplevel):
 
         bot = ttk.Frame(self, padding=(14, 10))
         bot.pack(fill="x")
-        ttk.Label(bot, foreground=ui_kit.SUB,
-                  text="점수를 고치거나 초안을 만든 뒤 [평가표에 저장]을 누르면 엑셀에 들어갑니다. 저장 전 원본은 자동 백업."
-                  ).pack(side="left")
         ttk.Button(bot, text="닫기", command=self._close).pack(side="right")
         ttk.Button(bot, text="완성본 엑셀로 저장…", style="Accent.TButton", command=self._save_as).pack(side="right", padx=8)
         ttk.Button(bot, text="평가표에 저장", command=self._save).pack(side="right")
-        ttk.Button(bot, text="증빙 폴더 만들기", command=self._make_folders).pack(side="right")
-        ttk.Button(bot, text="증빙 다시 확인", command=self._rescan).pack(side="right", padx=8)
+        if self.on_report:
+            ttk.Button(bot, text="다음: 폴더링 →", command=self._to_report).pack(side="right")
+        else:                                       # KODAS: 폴더링 창이 없으니 증빙 폴더는 이 창에서
+            ttk.Button(bot, text="증빙 폴더 만들기", command=self._make_folders).pack(side="right")
+            ttk.Button(bot, text="증빙 다시 확인", command=self._rescan).pack(side="right", padx=8)
+        # 안내 글은 버튼 뒤에 놓는다: 창이 좁으면 버튼이 아니라 이 글이 줄바꿈된다
+        ttk.Label(bot, foreground=ui_kit.SUB, wraplength=int(420 * self.k), justify="left",
+                  text="점수를 고치거나 초안을 만든 뒤 [평가표에 저장]을 누르면 엑셀에 들어갑니다. 저장 전 원본은 자동 백업."
+                  ).pack(side="left", fill="x", expand=True)
         self.bind("<Activate>", lambda e: self._rescan() if e.widget is self else None)   # 탐색기에서 넣고 돌아오면
 
     def _scroll_area(self, parent):
@@ -421,11 +439,12 @@ class QualityDialog(tk.Toplevel):
     def _slot(self, parent, title, hint, on_pick, on_open, on_clear):
         box = ttk.LabelFrame(parent, text=f" {title} ", padding=(10, 6))
         box.pack(fill="x", pady=(12, 0))
-        lbl = ttk.Label(box, text=hint, foreground=ui_kit.SUB, wraplength=int(260 * self.k), justify="left")
-        lbl.pack(side="left", fill="x", expand=True)
+        # 버튼을 먼저 놓는다: 칸이 좁아도 [파일 넣기…]가 찌그러지지 않고 설명 글이 줄어든다
         ttk.Button(box, text="삭제", width=5, command=on_clear).pack(side="right")
         ttk.Button(box, text="열기", width=5, command=on_open).pack(side="right", padx=(6, 0))
         ttk.Button(box, text="파일 넣기…", command=on_pick).pack(side="right", padx=6)
+        lbl = ttk.Label(box, text=hint, foreground=ui_kit.SUB, wraplength=int(170 * self.k), justify="left")
+        lbl.pack(side="left", fill="x", expand=True)
         lbl.hint = hint
         return lbl
 
@@ -598,6 +617,8 @@ class QualityDialog(tk.Toplevel):
         home = os.path.expanduser("~")
         folders = [init] + [os.path.dirname(p) for p in (self.path, self.prev_path, *self.extra_paths) if p]
         folders += [os.path.join(home, n) for n in ("Desktop", "Documents", "Downloads")]
+        if paths.frozen():
+            folders.append(paths.program_dir())        # 프로그램 폴더(영철ai/품질평가서 작성기)에 저장한 초안·완성본
         dlg = SheetPicker(self, title, list(dict.fromkeys(f for f in folders if f)), self.k)
         self.wait_window(dlg)
         return dlg.result or ""
@@ -697,8 +718,13 @@ class QualityDialog(tk.Toplevel):
 
     def _visible(self):
         for it in self.items:
-            if self._in_part(it) and not (self.only_missing.get() and (it.evidence or it.notes)):
-                yield it
+            if not self._in_part(it):
+                continue
+            if self.only_missing.get() and (it.evidence or it.notes):
+                continue
+            if self.only_blank.get() and not _blank(it):
+                continue
+            yield it
 
     def _tags(self, it):
         tags = [] if (it.evidence or it.notes) else ["missing"]
@@ -708,6 +734,8 @@ class QualityDialog(tk.Toplevel):
             tags.append("lack")
         elif getattr(it, "drafted", False):
             tags.append("drafted")
+        if _blank(it):
+            tags.append("noscore")
         return tuple(tags)
 
     def _fill(self):
@@ -738,7 +766,7 @@ class QualityDialog(tk.Toplevel):
 
     def _row(self, it):
         ev = f"{len(it.evidence)}개" if it.evidence else (it.notes[0][:8] if it.notes else "없음")
-        return (it.no, it.text, _fmt(it.max_score), _fmt(it.score), ev, it.basis.replace("\n", " / "))
+        return (it.no, it.text, _fmt(it.max_score), "미입력" if _blank(it) else _fmt(it.score), ev, it.basis.replace("\n", " / "))
 
     def _rescan(self):
         if not self.path:
@@ -754,7 +782,7 @@ class QualityDialog(tk.Toplevel):
         got = sum(i.score or 0 for i in vis)
         full = sum(i.max_score or 0 for i in vis if i.part != "가감점")
         miss = sum(1 for i in vis if not (i.evidence or i.notes))
-        blank = sum(1 for i in vis if i.score is None and i.part != "가감점")
+        blank = sum(1 for i in vis if _blank(i))
         self.sum_lbl.config(text=f"점수 {got:g} / {full:g}점   ·   점수 안 넣은 항목 {blank}   ·   증빙 없는 항목 {miss}"
                                  + ("   · 저장 안 함" if self.dirty else ""))
 
@@ -1010,7 +1038,7 @@ class QualityDialog(tk.Toplevel):
             self.status.config(text="멈추는 중입니다... (지금 읽는 쪽까지 마칩니다)")
 
     # ---------------- 저장·폴더 ----------------
-    def _save(self) -> bool:
+    def _save(self, quiet: bool = False) -> bool:
         if not self.path:
             return False
         self._apply()
@@ -1028,27 +1056,33 @@ class QualityDialog(tk.Toplevel):
         self.dirty = False
         self._summary()
         self.log(f"✅ 품질평가 평가표를 저장했습니다. ({os.path.basename(self.path)})")
-        messagebox.showinfo("품질평가서 작성", "평가표에 저장했습니다.\n\n"
+        if not quiet:
+            messagebox.showinfo("품질평가서 작성", "평가표에 저장했습니다.\n\n"
                             f"저장 전 원본 백업: {bak}", parent=self)
         return True
 
     def _save_as(self):
-        """완성본을 새 엑셀 파일로 내려받는다(기본: 다운로드 폴더). 초안 작성 파일은 그대로 둔다."""
+        """완성본을 새 엑셀 파일로 저장한다(기본: 초안 옆 '품질평가 작성' 폴더). 초안 작성 파일은 그대로 둔다."""
         if not self.path:
             messagebox.showinfo("품질평가서 작성", "먼저 [품질평가 초안 작성]에 평가표 엑셀을 넣어 주세요.", parent=self)
             return
         self._apply()
         name = qe.complex_name(self.path) or self.cfg.get("단지명") or ""
         year = qe.sheet_year(self.path) or dt.date.today().year
-        default = f"({name}) {year}년도 품질평가 평가표_완성본.xlsx" if name else f"{year}년도 품질평가 평가표_완성본.xlsx"
-        down = os.path.join(os.path.expanduser("~"), "Downloads")
+        only = None
+        if self.part.get() == MINE:                 # [내 항목 고르기]로 고른 항목만 보는 중이면 엑셀도 그 항목만
+            only = [i for i in self.items if self._in_part(i)]
+        tail = f"_완성본({self._who()} 내 항목)" if only else "_완성본"
+        default = f"({name}) {year}년도 품질평가 평가표{tail}.xlsx" if name else f"{year}년도 품질평가 평가표{tail}.xlsx"
+        down = qe.work_dir(self.path)          # 폴더링·한글파일과 같은 '품질평가 작성' 폴더
+        os.makedirs(down, exist_ok=True)
         dst = filedialog.asksaveasfilename(parent=self, title="완성본 엑셀로 저장", initialdir=down,
                                            initialfile=default, defaultextension=".xlsx",
                                            filetypes=[("엑셀", "*.xlsx")])
         if not dst:
             return
         try:
-            qe.save_as(self.path, dst, self.items, "" if qe.complex_name(self.path) else name)
+            qe.save_as(self.path, dst, self.items, "" if qe.complex_name(self.path) else name, only)
         except PermissionError:
             messagebox.showwarning("품질평가서 작성", "같은 이름의 파일이 엑셀에서 열려 있어 저장하지 못했습니다.\n"
                                    "엑셀을 닫거나 다른 이름으로 저장해 주세요.", parent=self)
@@ -1057,8 +1091,25 @@ class QualityDialog(tk.Toplevel):
             messagebox.showerror("품질평가서 작성", f"저장하지 못했습니다.\n{e}", parent=self)
             return
         self.log(f"✅ 품질평가 완성본을 저장했습니다: {dst}")
-        if messagebox.askyesno("품질평가서 작성", f"완성본을 저장했습니다.\n\n{dst}\n\n지금 엑셀로 열어 볼까요?", parent=self):
+        what = f"내 항목 {len(only)}개만 보이게(다른 항목 줄은 숨김) " if only else ""
+        if messagebox.askyesno("품질평가서 작성", f"완성본을 {what}저장했습니다.\n\n{dst}\n\n지금 엑셀로 열어 볼까요?",
+                               parent=self):
             self._startfile(dst)
+
+    def _to_report(self):
+        """[한글파일 만들기]: 고친 것이 있으면 평가표에 저장한 뒤, 이 창을 닫고 한글파일 작성 창에 이 초안을 넣는다."""
+        if not self.path:
+            messagebox.showinfo("품질평가서 작성", "먼저 [품질평가 초안 작성]에 평가표 엑셀을 넣어 주세요.", parent=self)
+            return
+        if self.running:
+            messagebox.showinfo("품질평가서 작성", "대장을 읽는 중입니다. 끝난 뒤 눌러 주세요.", parent=self)
+            return
+        if self.dirty and not self._save(quiet=True):
+            return
+        path = self.path
+        self.cfg["quality_xlsx"] = path
+        self.destroy()
+        self.on_report(path)
 
     def _make_folders(self):
         if not self.path:
@@ -1074,10 +1125,20 @@ class QualityDialog(tk.Toplevel):
             root = qe.evidence_root(self.path)
             os.makedirs(root, exist_ok=True)
             self._startfile(root)
+        else:
+            self._startfile("")
 
     def _startfile(self, p):
-        if p and os.path.exists(p):
-            os.startfile(p)
+        """[열기] 버튼들: 파일이 없으면 그냥 넘어가지 않고 알려 주고, 열다가 막히면 다른 길로 연다."""
+        if not p:
+            messagebox.showinfo("품질평가서 작성", "아직 넣은 파일이 없습니다.\n먼저 [파일 넣기…]로 엑셀을 넣어 주세요.",
+                                parent=self)
+            return
+        if not os.path.exists(p):
+            messagebox.showwarning("품질평가서 작성", f"파일을 찾을 수 없습니다(옮겼거나 지웠을 수 있음).\n\n{p}",
+                                   parent=self)
+            return
+        ui_kit.open_path(p, self)
 
     def _confirm_discard(self) -> bool:
         if not self.dirty:

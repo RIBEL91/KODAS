@@ -156,10 +156,44 @@ def test_cached_ledgers(tmp_path):
     import json
     today = dt.date.today()
     docs = qd.docs_to_json(LEDGERS[2025])
-    (tmp_path / f"{today.year - 1}.json").write_text(json.dumps({"date": "2000-01-01", "docs": docs}), "utf-8")
+    (tmp_path / f"{today.year - 1}.json").write_text(json.dumps({"v": qd.CACHE_V, "date": "2000-01-01", "docs": docs}), "utf-8")
     assert qd.cached_ledgers([today.year - 1, today.year], str(tmp_path)) is None     # 올해 목록 없음
-    (tmp_path / f"{today.year}.json").write_text(json.dumps({"date": "2000-01-01", "docs": docs}), "utf-8")
+    (tmp_path / f"{today.year}.json").write_text(json.dumps({"v": qd.CACHE_V, "date": "2000-01-01", "docs": docs}), "utf-8")
     assert qd.cached_ledgers([today.year], str(tmp_path)) is None                     # 올해 목록은 오늘 것만
-    (tmp_path / f"{today.year}.json").write_text(json.dumps({"date": today.isoformat(), "docs": docs}), "utf-8")
+    (tmp_path / f"{today.year}.json").write_text(json.dumps({"v": qd.CACHE_V, "date": today.isoformat(), "docs": docs}), "utf-8")
     got = qd.cached_ledgers([today.year - 1, today.year], str(tmp_path))
     assert set(got) == {today.year - 1, today.year} and len(got[today.year]) == len(docs)
+
+
+def test_internal_numbers_keeps_only_internal():
+    D = qd.Doc
+    led = {2026: [D(126, "광주양림2관리소-126", "3월 갱신", dt.date(2026, 1, 19), to=""),
+                  D(127, "광주양림2관리소-127", "3월 갱신", dt.date(2026, 1, 19), to="201동 904호 입주자귀하")]}
+    got = qd.internal_numbers("3월-126(26.01.19) 2026년 3월 안내문\n3월-127(26.01.19) 2026년 3월 안내문\n해약처리현황 화면 캡처",
+                              led, 2026)
+    assert got == "3월-126(26.01.19) 3월 갱신\n해약처리현황 화면 캡처"
+
+
+def test_old_cache_kept_for_past_year(tmp_path):
+    import json
+    today = dt.date.today()
+    docs = qd.docs_to_json(LEDGERS[2025])
+    (tmp_path / f"{today.year - 1}.json").write_text(json.dumps({"date": "2000-01-01", "docs": docs}), "utf-8")
+    assert qd.cached_ledgers([today.year - 1], str(tmp_path)) is not None    # 지난해는 한 번 읽은 목록을 계속 쓴다
+    (tmp_path / f"{today.year}.json").write_text(json.dumps({"date": today.isoformat(), "docs": docs}), "utf-8")
+    assert qd.cached_ledgers([today.year], str(tmp_path)) is None            # 올해 예전 목록(수신자 없음)은 다시
+
+
+def test_incremental_current_year(tmp_path, monkeypatch):
+    import json
+    today = dt.date.today()
+    old = [qd.Doc(10, "광주양림2관리소-10", "옛 문서", dt.date(today.year, 1, 2), to="")]
+    (tmp_path / f"{today.year}.json").write_text(
+        json.dumps({"v": qd.CACHE_V, "date": "2000-01-01", "docs": qd.docs_to_json(old)}), "utf-8")
+    rows = [{"text": ["생산", "20990101000000", "광주양림2관리소-11", "새 문서", "담당", ""]},
+            {"text": ["생산", "20990101000000", "광주양림2관리소-10", "옛 문서", "담당", ""]}]
+    monkeypatch.setattr(qd, "_new_rows", lambda *a, **k: rows)
+    got, _ = qd.load_ledgers(None, [today.year], str(tmp_path), lambda m: None)
+    assert [d.number for d in got[today.year]] == ["광주양림2관리소-11", "광주양림2관리소-10"]
+    saved = json.loads((tmp_path / f"{today.year}.json").read_text("utf-8"))
+    assert saved["date"] == today.isoformat() and len(saved["docs"]) == 2

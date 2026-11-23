@@ -319,17 +319,15 @@ class VerifyDialog(tk.Toplevel):
                 ed.set(shown or vl.next_label(self.rows[s.key]))
                 ed.bind("<<ComboboxSelected>>", lambda _e: self._commit(v, rec, f, ed, 0, move=False))
                 self.after(30, lambda: (ed.winfo_exists() and ed.event_generate("<Down>")))   # 목록을 바로 펼친다
-            elif f.kind == "date":       # 날짜는 달력에서 고른다(직접 적어도 된다)
-                from tkcalendar import DateEntry
-                ed = DateEntry(tree, date_pattern="y. m. d.", font=(F, 10), **CAL)
+            elif f.kind == "date":       # 날짜는 달력에서 고른다(글씨 고정 — 타자로 움직이지 않게)
+                ed = ui_kit.fixed_date_entry(tree, "y. m. d.", CAL, font=(F, 10))
                 cur = rec.get(f.key)
                 if isinstance(cur, vl.dt.date):
                     ed.set_date(cur)
                 ed.delete(0, "end")
-                ed.insert(0, start if first is None else first)
+                ed.insert(0, start)
                 ed.bind("<<DateEntrySelected>>", lambda _e: self._commit(v, rec, f, ed, 0, move=False))
-                if first is None:
-                    self.after(40, lambda: (ed.winfo_exists() and ed.drop_down()))   # 달력을 바로 연다
+                self.after(40, lambda: (ed.winfo_exists() and ed.drop_down()))   # 달력을 바로 연다
             elif f.kind == "status" or f.key == LABEL:
                 ed = ttk.Combobox(tree, values=s.status_values if f.kind == "status" else vl.OTHER_NAMES,
                                   font=(F, 10))
@@ -340,7 +338,7 @@ class VerifyDialog(tk.Toplevel):
                 ed.insert(0, start if first is None else first)
             ed.place(x=x, y=y, width=max(w, int(110 * self.k)), height=h)
             ed.bind("<Return>", lambda _e: (self._commit(v, rec, f, ed, 1), "break")[1])
-            if not month:
+            if not month and f.kind != "date":
                 ed.icursor("end")
                 if first is None:
                     ed.select_range(0, "end")

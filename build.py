@@ -1,8 +1,8 @@
-"""테스트 → 파일 하나짜리 exe 빌드 → 영철ai\\KODAS.exe (메인 실행 파일).
+"""테스트 → 파일 하나짜리 exe 빌드 → 영철ai\\KODAS\\KODAS.exe (메인 실행 파일).
 
     .venv\\Scripts\\python.exe build.py
 
-- 메인 실행 파일: 바탕화면\\영철ai\\KODAS.exe. 이 파일 하나만 옮겨도 실행된다
+- 메인 실행 파일: 바탕화면\\영철ai\\KODAS\\KODAS.exe. 이 파일 하나만 옮겨도 실행된다
   (서식·아이콘은 exe 안에, 설정·서식·기록은 %APPDATA%\\공문작성기에 둔다 → paths.py).
 - GitHub 업로드용 사본: 저장소의 dist\\KODAS.exe (메인과 같은 파일).
 배치파일 대신 파이썬으로 빌드한다(한글 경로·파일명을 cmd가 잘못 읽는 문제 회피).
@@ -14,7 +14,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NAME = "KODAS"
-MAIN_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "영철ai")     # 메인 실행 파일이 놓이는 곳
+MAIN_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "영철ai", "KODAS")   # 메인 실행 파일이 놓이는 곳
 UPLOAD_DIR = os.path.join(ROOT, "dist")                                  # 저장소에 올릴 사본
 
 

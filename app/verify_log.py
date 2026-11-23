@@ -44,17 +44,26 @@ class Sheet:
 MEMO = "자격검증 기록사항"          # 마지막 칸 제목(예전 이름: 소명대상/소명내용)
 OLD_MEMO = "소명대상/소명내용"
 HEAD_ROW = 3                        # 머리글 줄(칸 제목)
-RENEW_STATUS = ("범정부자동연계", "서류제출안내", "소명안내", "소명완료", "계약안내", "계약완료",
+# 갱신계약 탭 '갱신완료'에서 고르는 차례(일 진행 순서, 2026-11-20 요청)
+RENEW_STATUS = ("서류제출안내", "주민등록 검증", "범정부 자동연계", "소명안내", "소명완료", "계약안내", "계약완료")
+# 명의변경·예비자정기는 승계·예비자 상태까지
+OTHER_STATUS = ("주민등록 검증", "범정부 자동연계", "서류제출안내", "소명안내", "소명완료", "계약안내", "계약완료",
                 "승계계약완료", "자격검증 완료")
+OLD_STATUS = {"범정부자동연계": "범정부 자동연계", "주민등록검증": "주민등록 검증"}   # 예전 표기 → 지금 표기
+
+
+def norm_status(v):
+    """진행 상태 값의 예전 표기(띄어쓰기 없음)를 지금 목록의 표기로 맞춘다."""
+    return OLD_STATUS.get(v.strip(), v) if isinstance(v, str) else v
 RENEW_FIELDS = (
     Field("입주자격검색", "text"), Field("요청일", "date"), Field("범정부 송신", "date"),
     Field("총계", "total"), Field("세대주", "num"), Field("배우자", "num"), Field("세대원", "num"),
     Field("차수", "text"), Field("조사완료일", "date"), Field("갱신완료", "status"), Field(MEMO, "memo"))
 RENEW = Sheet("갱신", "주민등록 검증결과(갱신)", RENEW_FIELDS,
-              status_values=RENEW_STATUS, status_default="범정부자동연계")
+              status_values=RENEW_STATUS, status_default="주민등록 검증")
 # 갱신 시트에 섞여 있던 명의변경·예비자정기 줄을 옮겨 두는 시트(갱신 시트와 같은 모양)
 OTHER = Sheet("명의변경·예비자정기", "주민등록 검증결과(명의변경·예비자정기)", RENEW_FIELDS,
-              status_values=RENEW_STATUS, status_default="자격검증 완료")
+              status_values=OTHER_STATUS, status_default="자격검증 완료")
 REGULAR = Sheet("주택정기", "주민등록 검증결과(주택정기)", (
     Field("입주자격검색", "text"), Field("요청일", "date"),
     Field("총계", "total"), Field("세대주", "num"), Field("배우자", "num"), Field("세대원", "num"),
@@ -589,9 +598,12 @@ def store_load() -> dict:
     out = {}
     for s in SHEETS:
         rows = [{k: _dec(v) for k, v in r.items()} for r in raw.get(s.key, []) if isinstance(r, dict)]
+        key = status_key(s)
         for r in rows:            # 예전 이름으로 저장된 칸
             if OLD_MEMO in r and MEMO not in r:
                 r[MEMO] = r.pop(OLD_MEMO)
+            if key in r:
+                r[key] = norm_status(r[key])
         out[s.key] = _renumber(rows)
     return out
 
@@ -728,6 +740,8 @@ def _from_xlsx(field: Field, v):
         return parse_date(s)
     if field.kind in ("num", "total") and s:
         return parse_num(s)
+    if field.kind == "status":
+        return norm_status(s)
     return s
 
 

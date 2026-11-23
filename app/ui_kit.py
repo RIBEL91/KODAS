@@ -7,6 +7,7 @@ import csv
 import glob
 import os
 import tkinter as tk
+from tkinter import ttk
 from functools import lru_cache
 
 FONT = "맑은 고딕"
@@ -164,8 +165,15 @@ def saved_design() -> dict:
 
 
 _saved = saved_design()
-apply_design(_saved.get("name", DEFAULT_DESIGN), _saved.get("font", ""), _saved.get("colors"),
-             _saved.get("photo", ""))
+def _saved_photo() -> str:
+    try:
+        import paths
+        return paths.data_file(_saved.get("photo", ""))
+    except Exception:
+        return _saved.get("photo", "")
+
+
+apply_design(_saved.get("name", DEFAULT_DESIGN), _saved.get("font", ""), _saved.get("colors"), _saved_photo())
 
 # ---------------- 아이콘(윈도 기본 글꼴 Segoe MDL2 Assets) ----------------
 ICON = {
@@ -174,7 +182,7 @@ ICON = {
     "building": "\ue731", "person": "\ue77b", "people": "\ue716", "help": "\ue897", "search": "\ue721",
     "add": "\ue710", "chevron": "\ue76c", "more": "\ue712", "star": "\ue735", "folder": "\uf12b",
     "report": "\ue9f9", "list": "\ue8bc", "info": "\ue946", "back": "\ue72b",
-    "download": "\ue896",
+    "download": "\ue896", "upload": "\ue898",
 }
 
 FONT_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
@@ -444,13 +452,18 @@ def ellipsize(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
 
 
-def read_history(logs_dir: str) -> list[dict]:
-    """logs\\작성이력_년월.csv 전부를 최근 것부터."""
+HISTORY_DAYS = 31        # 작성 이력은 최근 한 달치만 보여 준다(2026-11-20 요청). 파일은 지우지 않는다.
+
+
+def read_history(logs_dir: str, days: int | None = HISTORY_DAYS) -> list[dict]:
+    """logs\\작성이력_년월.csv에서 최근 days일 것을 최근 것부터(days=None이면 전부)."""
+    import datetime as _dt
+    since = (_dt.datetime.now() - _dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S") if days else ""
     rows = []
     for path in glob.glob(os.path.join(logs_dir, "작성이력_*.csv")):
         try:
             with open(path, encoding="utf-8-sig", newline="") as f:
-                rows += [r for r in csv.DictReader(f) if r.get("시각")]
+                rows += [r for r in csv.DictReader(f) if r.get("시각") and r["시각"] >= since]
         except (OSError, csv.Error, UnicodeDecodeError):
             continue
     rows.sort(key=lambda r: r.get("시각", ""), reverse=True)
@@ -459,3 +472,190 @@ def read_history(logs_dir: str) -> list[dict]:
 
 def is_done(row: dict) -> bool:
     return not (row.get("상태") or "").startswith("실패")
+
+
+class FixedDateEntry(ttk.Combobox):
+    """글씨가 움직이지 않는 날짜 칸(2026-11-20 요청). 직접 타자하지 않고 칸 어디든 누르면 달력이 열려 고른다.
+    tkcalendar의 DateEntry는 칸 하나 만들 때마다 달력·말풍선·테마를 미리 만들어 0.5초쯤 걸리고 화면을 여러 번
+    다시 그렸다(2안·3안 고를 때 깜빡임·버퍼링) → 칸은 가벼운 읽기 전용 콤보로 두고 달력은 처음 누를 때 만든다.
+    DateEntry와 같이 get()·get_date()·set_date()·insert()·delete()·drop_down()·<<DateEntrySelected>>를 쓴다."""
+
+    def __init__(self, master, date_pattern: str = "y. m. d.", cal: dict | None = None, **kw):
+        cal = dict(cal or {})
+        if "font" in kw:
+            cal.setdefault("font", kw["font"])
+        elif "font" in cal:
+            kw["font"] = cal["font"]
+        super().__init__(master, state="readonly", values=(), cursor="hand2", **kw)
+        self._pattern = date_pattern
+        self._cal_opts = cal
+        self._top = self._calendar = None
+        self.user_cleared = False          # 사용자가 [날짜 지우기]·Delete로 비웠는지(자동 채우기가 되살리지 않게)
+        import datetime as _dt
+        self._date = _dt.date.today()
+        self._put(self._fmt(self._date))
+        self.bind("<ButtonPress-1>", lambda _e: (self.drop_down(), "break")[1])
+        for seq in ("<Down>", "<Alt-Down>", "<Return>", "<space>"):
+            self.bind(seq, lambda _e: (self.drop_down(), "break")[1])
+        for seq in ("<B1-Motion>", "<Double-Button-1>", "<Triple-Button-1>", "<MouseWheel>", "<Key>"):
+            self.bind(seq, lambda _e: "break")
+        for seq in ("<Delete>", "<BackSpace>"):      # 날짜 지우기(칸을 비운다)
+            self.bind(seq, lambda _e: (self.clear(), "break")[1])
+
+    # ---- 글자 ↔ 날짜 ----
+    def _fmt(self, d) -> str:
+        if self._pattern.startswith("yyyy"):
+            return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
+        return f"{d.year}. {d.month}. {d.day}."
+
+    def _parse(self, text: str):
+        import datetime as _dt
+        import re as _re
+        n = _re.findall(r"\d+", text or "")
+        if len(n) < 3:
+            return None
+        y, m, d = (int(x) for x in n[:3])
+        if y < 100:
+            y += 2000
+        try:
+            return _dt.date(y, m, d)
+        except ValueError:
+            return None
+
+    def _put(self, text: str) -> None:
+        ttk.Combobox.configure(self, state="normal")
+        ttk.Combobox.delete(self, 0, "end")
+        ttk.Combobox.insert(self, 0, text)
+        ttk.Combobox.configure(self, state="readonly")
+        self.selection_clear()
+        self.xview_moveto(0)              # 글씨는 늘 칸 왼쪽 처음 자리에
+
+    # ---- DateEntry와 같은 쓰임 ----
+    def get_date(self):
+        """칸의 날짜. 지워서 비어 있으면 ValueError(부르는 쪽은 '날짜 없음'으로 다룬다)."""
+        text = self.get().strip()
+        if not text:
+            raise ValueError("날짜를 지웠습니다")
+        d = self._parse(text)
+        if d is not None:
+            self._date = d
+        return self._date
+
+    def clear(self) -> None:
+        """날짜를 지운다(칸을 비우고 <<DateEntrySelected>>로 알린다)."""
+        self._close()
+        self.user_cleared = True
+        if self.get():
+            self._put("")
+            self.event_generate("<<DateEntrySelected>>")
+
+    def set_date(self, d) -> None:
+        self._date = d
+        self._put(self._fmt(d))
+
+    def insert(self, index, string) -> None:
+        cur = self.get()
+        i = len(cur) if index == "end" else int(index)
+        self._put(cur[:i] + str(string) + cur[i:])
+
+    def delete(self, first, last=None) -> None:
+        cur = self.get()
+        a = len(cur) if first == "end" else int(first)
+        b = a + 1 if last is None else (len(cur) if last == "end" else int(last))
+        self._put(cur[:a] + cur[b:])
+
+    def drop_down(self) -> None:
+        if "disabled" in self.state():
+            return
+        if self._top is not None and self._top.winfo_ismapped():
+            self._close()
+            return
+        if self._top is None:              # 달력은 처음 열 때 한 번만 만든다
+            from tkcalendar import Calendar
+            self._top = tk.Toplevel(self)
+            self._top.withdraw()
+            self._top.overrideredirect(True)
+            self._calendar = Calendar(self._top, selectmode="day", **self._cal_opts)
+            self._calendar.pack()
+            self._calendar.bind("<<CalendarSelected>>", self._picked)
+            bar = ttk.Frame(self._top)
+            bar.pack(fill="x")
+            ttk.Button(bar, text="날짜 지우기", command=self.clear).pack(side="left", padx=4, pady=4)
+            ttk.Button(bar, text="닫기", command=self._close).pack(side="right", padx=4, pady=4)
+            self._top.bind("<Escape>", lambda _e: self._close())
+            self._top.bind("<ButtonPress-1>", self._outside, add="+")
+        try:
+            d = self.get_date()
+        except ValueError:                 # 지운 칸: 마지막 날짜(처음엔 오늘)에서 연다
+            d = self._date
+        self._calendar.selection_set(d)
+        self._top.geometry(f"+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height()}")
+        self._top.attributes("-topmost", True)
+        self._top.deiconify()
+        self._top.lift()
+        self._calendar.focus_set()
+        try:
+            self._top.grab_set()           # 바깥을 누르면 닫히게
+        except tk.TclError:
+            pass
+
+    def _outside(self, e) -> None:
+        t = self._top
+        x, y = e.x_root, e.y_root
+        if not (t.winfo_rootx() <= x < t.winfo_rootx() + t.winfo_width()
+                and t.winfo_rooty() <= y < t.winfo_rooty() + t.winfo_height()):
+            self._close()
+
+    def _close(self) -> None:
+        if self._top is not None and self._top.winfo_ismapped():
+            try:
+                self._top.grab_release()
+            except tk.TclError:
+                pass
+            self._top.withdraw()
+            try:
+                self.focus_set()           # 닫으면 다시 날짜 칸으로(바로 Delete로 지울 수 있게)
+            except tk.TclError:
+                pass
+
+    def _picked(self, _e=None) -> None:
+        d = self._calendar.selection_get()
+        self._close()
+        if d is not None:
+            self.user_cleared = False
+            self.set_date(d)
+            self.event_generate("<<DateEntrySelected>>")
+
+
+_DATE_STYLED = False
+
+
+def fixed_date_entry(parent, pattern: str, cal: dict, **kw):
+    """글씨가 움직이지 않는 가벼운 날짜 칸(FixedDateEntry). 스타일은 처음 한 번만 정한다
+    (스타일을 바꾸면 창 전체를 다시 그려 깜빡인다)."""
+    global _DATE_STYLED
+    if not _DATE_STYLED:
+        ttk.Style().configure("Date.TCombobox")
+        ttk.Style().map("Date.TCombobox", fieldbackground=[("readonly", "white")], foreground=[("readonly", TEXT)],
+                        selectbackground=[("readonly", "white")], selectforeground=[("readonly", TEXT)])
+        _DATE_STYLED = True
+    return FixedDateEntry(parent, date_pattern=pattern, cal=cal, style="Date.TCombobox", **kw)
+
+
+def open_path(p: str, parent=None) -> bool:
+    """파일·폴더를 기본 프로그램으로 연다. os.startfile이 막히면 탐색기로 한 번 더 열고,
+    그래도 안 되면 조용히 넘어가지 않고 이유를 알려 준다(버튼이 '안 눌리는' 것처럼 보이지 않게)."""
+    import subprocess
+    from tkinter import messagebox
+    try:
+        os.startfile(p)
+        return True
+    except OSError as e:
+        first = e
+    try:
+        subprocess.Popen(["explorer.exe", os.path.normpath(p)])
+        return True
+    except OSError:
+        pass
+    messagebox.showerror("품질평가서 작성", f"열지 못했습니다.\n\n{p}\n\n{first}", parent=parent)
+    return False

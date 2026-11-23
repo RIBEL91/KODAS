@@ -4,9 +4,10 @@
 - A 평가부문, B 평가영역, C 평가지표 (병합 셀이라 윗칸에만 값), D 번호(1-1 등, 병합)
 - E 평가항목('◦'로 시작) / 다음 줄 E '[평가기준] …'
 - F 배점, G 평가점수, H 준비서류, I 평가 근거(문서번호 등), J 점검자 의견
-증빙 폴더(폴더링)는 평가표가 있는 폴더 아래 '폴더링\\번호\\k. 항목' 모양이다.
-4권(임대운영)·본지사 협조도는 번호 폴더가 바로 '폴더링' 아래에, 다른 부문은
-번호가 겹치므로 '폴더링\\부문\\번호' 아래에 만든다.
+증빙 폴더(폴더링)는 평가표가 있는 폴더의 '품질평가 작성' 안 '폴더링\\번호\\k. 항목' 모양이다
+(만든 한글 보고서도 같은 '품질평가 작성' 폴더에 둔다).
+보고서 권(1~4권)마다 따로 둔다: 4권(임대운영·본지사 협조도)은 번호 폴더가 바로 '폴더링' 아래에,
+1~3권은 번호가 겹치므로 '폴더링\\N권 이름\\번호' 아래에 만든다(예전 '폴더링\\부문\\번호'가 있으면 그대로).
 """
 from __future__ import annotations
 
@@ -23,6 +24,20 @@ SHEET = "항목별평가표"
 SUMMARY = "총괄표"
 FOLDER = "폴더링"
 REPORT4_PARTS = ("임대운영", "본.지사업무협조도")       # 4권(임대운영) 보고서 범위 → 폴더링 바로 아래
+VOLUMES = {1: "1권 유지관리", 2: "2권 운영관리", 3: "3권 주민참여 및 공동체 활성화", 4: "4권 임대운영"}
+
+
+def volume_of(part: str) -> int:
+    """평가부문 → 보고서 권. 1권 유지관리, 2권 운영관리, 4권 임대운영·본지사 협조도, 나머지(주민참여·단지특성·
+    입주민만족도·가감점)는 3권."""
+    p = re.sub(r"[\s.·ㆍ]", "", part or "")
+    if part in REPORT4_PARTS or "임대운영" in p or "협조" in p:
+        return 4
+    if "유지관리" in p:
+        return 1
+    if "운영관리" in p:
+        return 2
+    return 3
 _BAD = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
@@ -254,8 +269,18 @@ def save(path: str, items: list[Item], complex_label: str = "", backup_dir: str 
             s = wb[SUMMARY]
             if not _s(s["B5"].value):
                 s["B5"].value = complex_label
+    normal_view(wb)
     wb.save(path)
     return bak
+
+
+def normal_view(wb) -> None:
+    """엑셀을 열었을 때 '1 페이지' 같은 페이지 표시가 안 보이게 모든 시트를 [기본] 보기로 둔다."""
+    for ws in wb.worksheets:
+        v = ws.sheet_view
+        v.view = "normal"
+        v.zoomScale = v.zoomScaleNormal or 100
+        v.showRuler = None
 
 
 FLAG_COLOR = "FFFFF200"          # (예전) 노란 칸 표시 — 이 색일 때만 우리가 칠한 것으로 보고 지운다
@@ -448,15 +473,42 @@ def _trim_backups(folder: str, stem: str, keep: int = 20) -> None:
 
 
 # ---------------- 증빙 폴더 ----------------
+WORK_FOLDER = "품질평가 작성"     # 평가표 옆에 만드는 작업 폴더: 폴더링·폴더링 4권·한글 보고서를 모아 둔다
+
+
+def work_dir(xlsx_path: str) -> str:
+    """평가표 옆 '품질평가 작성' 폴더(폴더링·한글파일·완성본 엑셀을 함께 둔다).
+    평가표가 이미 '품질평가 작성' 안에 있으면(완성본을 다시 넣은 경우) 그 폴더를 그대로 쓴다."""
+    here = os.path.dirname(os.path.abspath(xlsx_path))
+    return here if os.path.basename(here) == WORK_FOLDER else os.path.join(here, WORK_FOLDER)
+
+
 def evidence_root(xlsx_path: str) -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(xlsx_path)), FOLDER)
+    """'품질평가 작성\\폴더링'. 예전처럼 평가표 바로 옆에 '폴더링'만 있으면 그것을 그대로 쓴다."""
+    new = os.path.join(work_dir(xlsx_path), FOLDER)
+    old = os.path.join(os.path.dirname(os.path.abspath(xlsx_path)), FOLDER)
+    if not os.path.isdir(new) and os.path.isdir(old):
+        return old
+    return new
+
+
+VOL4_FOLDER = "폴더링 4권"      # 4권(임대운영)은 폴더링 옆 '폴더링 4권'에 따로 둔다
+
+
+def volume_dir(root: str, vol: int) -> str:
+    """권의 폴더링 위치: 4권은 폴더링 옆 '폴더링 4권', 1~3권은 '폴더링\\N권 이름'."""
+    if vol == 4:
+        return os.path.join(os.path.dirname(os.path.abspath(root)), VOL4_FOLDER)
+    return os.path.join(root, VOLUMES[vol])
 
 
 def _no_dir(root: str, it: Item) -> str:
     no = it.no or "가감점"
-    if it.part in REPORT4_PARTS:
-        return os.path.join(root, no)
-    return os.path.join(root, _BAD.sub(" ", it.part), no)
+    old = os.path.join(root, _BAD.sub(" ", it.part), no)          # 예전 모양(부문 폴더)이 있으면 그대로
+    vol = volume_of(it.part)
+    if vol != 4 and os.path.isdir(old):
+        return old
+    return os.path.join(volume_dir(root, vol), no)
 
 
 def item_dir(root: str, it: Item, create: bool = False) -> str:
@@ -483,7 +535,7 @@ def scan_evidence(root: str, items: list[Item]) -> None:
             for base, dirs, names in os.walk(d):
                 notes += [n for n in dirs if not os.listdir(os.path.join(base, n))]
                 files += [os.path.join(base, n) for n in names if not n.startswith(("~$", "."))
-                          and n.lower() != "thumbs.db"]
+                          and n.lower() != "thumbs.db" and not n.endswith("(이유).txt")]
         it.evidence = sorted(files)
         it.notes = notes
 
@@ -581,9 +633,65 @@ def sheet_year(path: str) -> int | None:
     return int(m[1]) if m else None
 
 
-def save_as(src: str, dst: str, items: list[Item], complex_label: str = "") -> str:
-    """src 평가표를 dst로 복사하고 점수·근거를 써 넣는다(완성본 내려받기). src는 그대로."""
+def save_as(src: str, dst: str, items: list[Item], complex_label: str = "", only=None) -> str:
+    """src 평가표를 dst로 복사하고 점수·근거를 써 넣는다(완성본 내려받기). src는 그대로.
+    only(항목 목록)를 주면 항목별평가표에서 그 항목 줄만 보이게 한다(다른 항목 줄은 숨김 — 합계 수식은 그대로)."""
     if os.path.abspath(src) != os.path.abspath(dst):
         shutil.copy2(src, dst)
     save(dst, items, complex_label)
+    if only is not None:
+        hide_other_items(dst, items, only)
     return dst
+
+
+def item_spans(items: list[Item]) -> dict[int, tuple[int, int]]:
+    """항목(id) → (첫 줄, 끝 줄): 항목 줄부터 다음 항목 줄 앞까지(마지막 항목은 평가기준 줄까지)."""
+    rows = sorted(items, key=lambda i: i.row)
+    out = {}
+    for k, it in enumerate(rows):
+        end = rows[k + 1].row - 1 if k + 1 < len(rows) else it.row + 1
+        out[id(it)] = (it.row, max(it.row, end))
+    return out
+
+
+def hide_other_items(path: str, items: list[Item], keep: list[Item]) -> int:
+    """항목별평가표에서 keep에 없는 항목 줄을 숨긴다. 숨긴 줄 수."""
+    from openpyxl import load_workbook
+    keep_ids = {id(i) for i in keep}
+    spans = item_spans(items)
+    wb = load_workbook(path, rich_text=True)
+    ws = wb[SHEET]
+    n = 0
+    for it in items:
+        if id(it) in keep_ids:
+            continue
+        a, b = spans[id(it)]
+        for r in range(a, b + 1):
+            ws.row_dimensions[r].hidden = True
+            n += 1
+    if SUMMARY in wb.sheetnames:                    # 총괄표도 고른 부문 줄만(합계는 보이는 줄만 더함)
+        sm = wb[SUMMARY]
+        keep_parts = {re.sub(r"[\s.·ㆍ]", "", i.part) for i in keep}
+        head = total = None
+        for r in range(1, min(sm.max_row, 60) + 1):
+            label = re.sub(r"[\s.·ㆍ]", "", _s(sm.cell(r, 2).value))
+            if label == "평가항목":
+                head = r
+            elif head and label == "합계":
+                total = r
+            elif head and total and label:
+                if label in keep_parts:
+                    continue
+                if not any(_s(sm.cell(r, c).value).startswith("=") for c in (4, 6)) and not sm.cell(r, 4).value:
+                    break                           # 표 끝
+                sm.row_dimensions[r].hidden = True
+        if total:
+            last = total
+            while _s(sm.cell(last + 1, 2).value) and not _s(sm.cell(last + 1, 2).value).startswith("20"):
+                last += 1
+            for c in (4, 6):
+                col = "DF"[c == 6]
+                sm.cell(total, c).value = f"=SUBTOTAL(109,{col}{total + 1}:{col}{last})"
+    normal_view(wb)
+    wb.save(path)
+    return n
