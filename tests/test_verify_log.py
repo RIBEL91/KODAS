@@ -27,7 +27,14 @@ def test_next_label_and_cells():
     assert vl.next_label([{"입주자격검색": "26-12월"}]) == "27-1월"
     assert vl.to_cell(vl.Field("요청일", "date"), dt.date(2026, 1, 2)) == {"t": "date", "v": "2026-01-02"}
     assert vl.to_cell(vl.Field("차수", "text"), "") == {"t": "empty"}
-    assert [len(s.fields) for s in vl.SHEETS] == [11, 11, 10]      # B~L(갱신·명의변경), B~K(주택정기)
+    # 화면 칸: 갱신완료와 기록사항 사이에 소명안내·소명완료일(KODAS에만 있음)
+    # 탭: 갱신 · 명의변경(요청일 옆 명의변경 신청일) · 예비자정기 · 주택정기
+    assert [s.key for s in vl.SHEETS] == ["갱신", "명의변경", "예비자정기", "주택정기"]
+    assert [len(s.fields) for s in vl.SHEETS] == [13, 14, 13, 12]
+    assert [f.key for f in vl.NAME_CHANGE.fields][1:3] == ["요청일", "명의변경 신청일"]
+    assert [f.key for f in vl.RENEW.fields][-4:] == ["갱신완료", "소명안내", "소명완료일", "자격검증 기록사항"]
+    # 관계철 엑셀은 예전 칸 그대로: B~L(갱신·명의변경), B~K(주택정기)
+    assert [len(s.excel_fields) for s in vl.EXCEL_SHEETS] == [11, 11, 10]
     assert vl.RENEW.last_col == 12 and vl.REGULAR.last_col == 11
     assert vl.RENEW.fields[-1].key == vl.REGULAR.fields[-1].key == "자격검증 기록사항"
 
@@ -105,3 +112,45 @@ def test_export_import_xlsx_roundtrip(tmp_path, monkeypatch):
     assert r1["총계"] == 6 and r1["요청일"] == dt.date(2026, 1, 5) and r1[vl.MEMO] == "소명 1건"
     assert r2["요청일"] == dt.date(2026, 2, 3)
     assert data[vl.REGULAR.key][0]["세대주"] == 3              # 파일에 없던 시트는 그대로
+
+
+def test_call_check_sets_due_date():
+    rec = {}
+    vl.set_call(rec, True, dt.date(2026, 11, 24), 10)
+    assert rec[vl.CALL] == vl.CHECK_MARK and rec[vl.CALL_DUE] == dt.date(2026, 12, 4)
+    vl.set_call(rec, False)
+    assert rec[vl.CALL] == "" and rec[vl.CALL_DUE] == ""
+
+
+def test_old_export_without_call_columns(tmp_path):
+    """소명 칸이 없던 예전 [엑셀로 받기] 파일도 칸 제목으로 맞춰 읽는다(기록사항이 소명안내로 밀리지 않게)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = vl.RENEW.name[:31]
+    for i, f in enumerate(vl.RENEW.excel_fields):
+        ws.cell(vl.HEAD_ROW, vl.FIRST_COL + i, f.key)
+    ws.cell(vl.FIRST_ROW, vl.FIRST_COL, "26-1월")
+    ws.cell(vl.FIRST_ROW, vl.FIRST_COL + len(vl.RENEW.excel_fields) - 1, "메모")
+    p = tmp_path / "old.xlsx"
+    wb.save(p)
+    rec = vl.read_xlsx(str(p))[vl.RENEW.key][0]
+    assert rec[vl.MEMO] == "메모" and rec[vl.CALL] == "" and rec[vl.CALL_DUE] == ""
+
+
+def test_old_store_splits_name_change(tmp_path, monkeypatch):
+    """예전 '명의변경·예비자정기' 탭 기록은 읽을 때 명의변경 / 예비자정기 탭으로 나뉜다."""
+    import json
+    path = tmp_path / "기록.json"
+    monkeypatch.setattr(vl, "store_path", lambda: str(path))
+    path.write_text(json.dumps({"갱신": [], "주택정기": [], "명의변경·예비자정기": [
+        {"입주자격검색": "명의변경", "차수": "2차"}, {"입주자격검색": "예비자정기", "차수": "4차"},
+        {"입주자격검색": "명의변경(정순자)", "차수": "23차"}, {"입주자격검색": "상반기 예비자정기"}]},
+        ensure_ascii=False), encoding="utf-8")
+    data = vl.store_load()
+    assert [r["차수"] for r in data["명의변경"]] == ["2차", "23차"]
+    assert [r["입주자격검색"] for r in data["예비자정기"]] == ["예비자정기", "상반기 예비자정기"]
+    vl.store_write(vl.NAME_CHANGE, {**data["명의변경"][0], vl.NAME_CHANGE_DATE: dt.date(2026, 1, 5)}, 1)
+    again = vl.store_load()
+    assert "명의변경·예비자정기" not in json.loads(path.read_text(encoding="utf-8"))
+    assert again["명의변경"][0][vl.NAME_CHANGE_DATE] == dt.date(2026, 1, 5) and len(again["예비자정기"]) == 2

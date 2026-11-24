@@ -1164,8 +1164,34 @@ def _hwp_mark_exists(driver, mark: str) -> bool | None:
     return driver.execute_script(_JS_BODY_HAS, mark)
 
 
-def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
-    """본문 표식 자리에 [문서링크]로 관련 문서를 넣는다."""
+def _unlock_secure(driver, password: str, back: str, log, tried: set) -> bool:
+    """대장의 보안문서를 고르면 뜨는 '처리암호' 창(또는 화면의 암호 칸·암호 묻는 경고창)에
+    홈넷 비밀번호를 넣어 연다. 한 문서에 한 번만 넣는다(틀리면 사람에게 맡긴다). 넣었으면 True."""
+    if not password or "pw" in tried:
+        return False
+    import collector
+    st = collector.unlock_pw_window(driver, password, log)      # 따로 뜬 '처리암호' 창
+    try:
+        driver.switch_to.window(back)
+    except Exception:
+        pass
+    if st:
+        tried.add("pw")
+        return st == "unlocked"
+    if collector.drain_alerts(driver, log, password) == "unlocked":   # 암호 묻는 경고창
+        tried.add("pw")
+        collector.unlock_field(driver, password, log)
+        return True
+    if collector.unlock_field(driver, password, log):                 # 화면 안 암호 칸
+        tried.add("pw")
+        return True
+    return False
+
+
+def insert_doc_link(driver, draft: str, link: DocLink, log, password: str = "") -> None:
+    """본문 표식 자리에 [문서링크]로 관련 문서를 넣는다.
+    보안문서면 password(홈넷 비밀번호)를 '처리암호' 창에 넣어 연다."""
+    tried: set = set()
     from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.by import By
 
@@ -1226,6 +1252,8 @@ def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
         selected = loaded = False
         end = time.time() + wait
         while time.time() < end:
+            if _unlock_secure(driver, password, win, log, tried):
+                end = max(end, time.time() + 10)    # 비밀번호를 넣은 뒤 문서 정보를 충분히 기다린다
             msg = _accept_alert(driver)
             if msg:
                 log(f"  문서링크 메시지: {msg}")
@@ -1257,6 +1285,8 @@ def insert_doc_link(driver, draft: str, link: DocLink, log) -> None:
         _click(driver, "#nbutton_btnRelateOk-button")
         end = time.time() + (15 if attempt == 0 else 20)
         while time.time() < end and win in driver.window_handles:
+            if _unlock_secure(driver, password, win, log, tried):
+                end = max(end, time.time() + 10)
             msg = _accept_alert(driver)
             if msg:
                 log(f"  문서링크 메시지: {msg}")
@@ -1347,11 +1377,11 @@ def create_draft(driver, info: DocInfo, receiver: str, body_html: str, log=print
     return create_drafts(driver, [DraftPart(info, receiver, body_html, upload_path)], log, notify)
 
 
-def create_drafts(driver, parts: list[DraftPart], log=print, notify=None) -> list[str]:
+def create_drafts(driver, parts: list[DraftPart], log=print, notify=None, password: str = "") -> list[str]:
     """표준기안문에 안마다 제목·수신자·본문을 채운다. 2안부터는 [안추가]로 만든다. 상신은 하지 않는다.
 
     자동으로 못 한 부분은 사용자에게 맡기고(notify) 결재정보 [확인]을 기다린다.
-    돌려주는 값은 사용자가 마저 할 일 목록.
+    돌려주는 값은 사용자가 마저 할 일 목록. password: 문서링크로 보안문서를 열 때 넣을 홈넷 비밀번호.
     """
     todo: list[str] = []
     draft = open_form(driver, log)
@@ -1370,7 +1400,7 @@ def create_drafts(driver, parts: list[DraftPart], log=print, notify=None) -> lis
             from selenium.common.exceptions import WebDriverException
             for link in part.doc_links:
                 try:
-                    insert_doc_link(driver, draft, link, log)
+                    insert_doc_link(driver, draft, link, log, password)
                 except (DraftError, WebDriverException) as ex:
                     if draft not in driver.window_handles:
                         raise DraftError("기안 창이 닫혔습니다. 홈넷 화면에서 이어서 작성해 주세요.") from None

@@ -2,7 +2,7 @@
 기록은 KODAS 안(사용자 폴더의 자격검증기록.json)에 따로 저장한다 — 관계철 엑셀과 연결하지 않는다.
 처음 한 번만 바탕화면 관계철 엑셀이 있으면 그 내용을 가져와 시작한다(엑셀은 읽기만).
 
-탭: 갱신계약 · 주택정기 · 명의변경·예비자정기
+탭: 갱신계약 · 주택정기 · 명의변경 · 예비자정기
 - 칸을 두 번 누르거나, 칸을 고르고 글자를 치거나 Enter·F2 → 그 자리에서 고치기
 - 갱신계약·주택정기의 월(입주자격검색)은 목록에서 고른다(26-1월 …)
 - Enter: 저장하고 아래 칸 / Tab: 저장하고 오른쪽 칸 / Esc: 취소 / Delete: 칸 비우기
@@ -20,7 +20,7 @@ import ui_kit
 import verify_log as vl
 
 F = ui_kit.FONT
-WIDTHS = {"text": 100, "date": 104, "num": 58, "total": 58, "status": 130, "memo": 320}
+WIDTHS = {"text": 100, "date": 104, "num": 58, "total": 58, "status": 130, "check": 74, "memo": 320}
 LABEL = "입주자격검색"
 DONE = "done"           # 완료 묶음 줄의 iid
 # 날짜 칸 달력(공문 작성 화면과 같은 모양)
@@ -54,6 +54,15 @@ class VerifyDialog(tk.Toplevel):
                   foreground=ui_kit.SUB).pack(side="left", padx=12)
         ttk.Button(top, text="⬆ 엑셀 올려 적용", command=self._import_xlsx).pack(side="right")
         ttk.Button(top, text="⬇ 엑셀로 받기", command=self._export_xlsx).pack(side="right", padx=(0, 6))
+        # 소명안내를 체크하면 소명완료일 = 오늘 + 소명기간(일)
+        ttk.Label(top, text="일", foreground=ui_kit.SUB).pack(side="right", padx=(2, 16))
+        self.call_days = tk.StringVar(value=str(self._call_days()))
+        sp = ttk.Spinbox(top, from_=1, to=90, width=4, textvariable=self.call_days, font=(F, 10),
+                         command=self._keep_call_days)
+        sp.pack(side="right")
+        sp.bind("<FocusOut>", lambda _e: self._keep_call_days())
+        sp.bind("<Return>", lambda _e: self._keep_call_days())
+        ttk.Label(top, text="소명기간", foreground=ui_kit.SUB).pack(side="right", padx=(0, 4))
 
         style = ttk.Style(self)
         style.configure("Grid.Treeview", rowheight=int(26 * self.k), font=(F, 10))
@@ -92,10 +101,11 @@ class VerifyDialog(tk.Toplevel):
             tree.heading(f.key, text=head.replace("(문서통보일)", ""))
             tree.column(f.key, width=int(WIDTHS[f.kind] * self.k), anchor="w" if f.kind == "memo" else "center",
                         stretch=f.kind == "memo")
-        tree.tag_configure("odd", background=ui_kit.SIDEBAR)
+        tree.tag_configure("even", background=ui_kit.HOVER_SOFT)     # 짝수 줄은 옅은 디자인 색(줄 구분, 사용자 2026-11-23)
         tree.tag_configure("saving", foreground="#b45309")
         tree.tag_configure("group", background="#e9edf5", foreground=ui_kit.SUB, font=(F, 10, "bold"))
-        tree.tag_configure("doneRow", foreground="#7a8496", background="#f3f5f9")
+        tree.tag_configure("doneRow", foreground="#7a8496", background="#f8f9fb")
+        tree.tag_configure("doneEven", background="#eceff4")
         sb = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -118,7 +128,7 @@ class VerifyDialog(tk.Toplevel):
         self.tabs[v.key] = {"tree": tree, "cell": cell, "col": 0, "open": False,
                             "memo": memo, "memo_lbl": mlbl, "memo_rec": None}
         tree.bind("<Button-1>", lambda e, v=v: self._click(v, e))
-        tree.bind("<Double-1>", lambda e, v=v: (self._click(v, e), self._edit(v), "break")[-1])
+        tree.bind("<Double-1>", lambda e, v=v: self._double(v, e))
         tree.bind("<Return>", lambda _e, v=v: self._edit(v))
         tree.bind("<F2>", lambda _e, v=v: self._edit(v))
         tree.bind("<Left>", lambda _e, v=v: self._move_col(v, -1))
@@ -128,6 +138,34 @@ class VerifyDialog(tk.Toplevel):
         tree.bind("<Key>", lambda e, v=v: self._type_start(v, e))
         tree.bind("<<TreeviewSelect>>", lambda _e, v=v: self._show_cell(v))
         tree.bind("<MouseWheel>", lambda _e: self._close_editor(True), add="+")
+
+    def _call_days(self) -> int:
+        try:
+            n = int(str(self.cfg.get("call_days", vl.DEFAULT_CALL_DAYS)).strip())
+        except (TypeError, ValueError):
+            n = vl.DEFAULT_CALL_DAYS
+        return n if 0 < n <= 365 else vl.DEFAULT_CALL_DAYS
+
+    def _keep_call_days(self):
+        """소명기간 칸 값을 설정에 둔다(창을 닫으면 저장)."""
+        try:
+            n = int(self.call_days.get().strip())
+        except ValueError:
+            n = 0
+        if not 0 < n <= 365:
+            self.call_days.set(str(self._call_days()))
+            return
+        self.cfg["call_days"] = n
+
+    def _toggle_call(self, v: vl.View, rec: dict):
+        """소명안내 체크 켜기·끄기. 켜면 소명완료일 = 오늘 + 소명기간, 끄면 둘 다 비운다."""
+        self._keep_call_days()
+        on = not str(rec.get(vl.CALL, "") or "").strip()
+        vl.set_call(rec, on, days=self._call_days())
+        self._save(v.sheet, rec)
+        name = str(rec.get(LABEL, "")).replace(chr(10), " ")
+        self._set_status(f"{name}: 소명안내 체크 → 소명완료일 {vl.show(rec[vl.CALL_DUE])} (오늘 + {self._call_days()}일)"
+                         if on else f"{name}: 소명안내 체크를 풀고 소명완료일을 비웠습니다.")
 
     def _set_status(self, text: str, error: bool = False):
         self.status.config(text=text, foreground=ui_kit.DANGER if error else ui_kit.SUB)
@@ -162,12 +200,12 @@ class VerifyDialog(tk.Toplevel):
             label = f"{'▼' if t['open'] else '▶'} {vl.status_key(v.sheet)} {len(done)}건"
             tree.insert("", "end", iid=DONE, open=t["open"], tags=("group",),
                         values=[label, "(누르면 " + ("접기" if t["open"] else "펼치기") + ")"] + [""] * (n - 2))
-            for r in done:
+            for i, r in enumerate(done):
                 tree.insert(DONE, "end", iid=str(r["_row"]), values=[self._cell_text(r, f) for f in v.sheet.fields],
-                            tags=("doneRow",) + (("saving",) if self._saving(r) else ()))
+                            tags=("doneRow",) + (("doneEven",) if i % 2 else ()) + (("saving",) if self._saving(r) else ()))
         for i, r in enumerate(rest):
             tree.insert("", "end", iid=str(r["_row"]), values=[self._cell_text(r, f) for f in v.sheet.fields],
-                        tags=(("odd",) if i % 2 else ()) + (("saving",) if self._saving(r) else ()))
+                        tags=(("even",) if i % 2 else ()) + (("saving",) if self._saving(r) else ()))
         if keep is not None and tree.exists(str(keep["_row"])):
             iid = str(keep["_row"])
             if tree.parent(iid) == DONE and not t["open"]:
@@ -211,7 +249,26 @@ class VerifyDialog(tk.Toplevel):
         col = tree.identify_column(e.x)
         if col:
             t["col"] = max(0, int(col[1:]) - 1)
+        row = tree.identify_row(e.y)
+        f = v.sheet.fields[t["col"]] if col else None
+        if f is not None and f.kind == "check" and row and row != DONE and tree.identify_region(e.x, e.y) == "cell":
+            rec = self._rec(v.sheet, int(row))
+            if rec is not None:          # 소명안내 칸은 한 번 눌러 체크
+                tree.selection_set(row)
+                tree.focus(row)
+                self.after(1, lambda: (self._toggle_call(v, rec), self._show_cell(v)))
+                return "break"
         self.after(1, lambda: self._show_cell(v))
+
+    def _double(self, v: vl.View, e):
+        """두 번 누르기: 고치기. 소명안내 칸은 한 번 누를 때 이미 체크했으니 넘어간다."""
+        tree = self.tabs[v.key]["tree"]
+        col = tree.identify_column(e.x)
+        if col and v.sheet.fields[max(0, int(col[1:]) - 1)].kind == "check":
+            return "break"
+        self._click(v, e)
+        self._edit(v)
+        return "break"
 
     def _memo_load(self, v: vl.View, rec: dict | None):
         """표 아래 기록사항 칸에 rec의 기록사항을 띄운다(앞에 띄운 줄에서 고친 것은 먼저 저장)."""
@@ -287,6 +344,10 @@ class VerifyDialog(tk.Toplevel):
         if f.kind == "total":
             self._set_status("총계는 세대주+배우자+세대원으로 자동 계산됩니다.")
             return "break"
+        if f.kind == "check":           # 소명안내: 누르면 체크 켜기·끄기(소명완료일 자동)
+            if first is None or first == " ":
+                self._toggle_call(v, rec)
+            return "break"
         if f.kind == "memo":            # 기록사항은 표 아래 넓은 칸에 적는다
             self._memo_load(v, rec)
             memo = t["memo"]
@@ -329,7 +390,7 @@ class VerifyDialog(tk.Toplevel):
                 ed.bind("<<DateEntrySelected>>", lambda _e: self._commit(v, rec, f, ed, 0, move=False))
                 self.after(40, lambda: (ed.winfo_exists() and ed.drop_down()))   # 달력을 바로 연다
             elif f.kind == "status" or f.key == LABEL:
-                ed = ttk.Combobox(tree, values=s.status_values if f.kind == "status" else vl.OTHER_NAMES,
+                ed = ttk.Combobox(tree, values=s.status_values if f.kind == "status" else (s.label_choices or vl.OTHER_NAMES),
                                   font=(F, 10))
                 ed.insert(0, start if first is None else first)
                 ed.bind("<<ComboboxSelected>>", lambda _e: self._commit(v, rec, f, ed, 0, move=False))
@@ -420,6 +481,9 @@ class VerifyDialog(tk.Toplevel):
         f = v.sheet.fields[t["col"]]
         if rec is None or f.kind == "total" or f.key == LABEL:
             return "break"
+        if f.kind == "check" and rec.get(f.key, "") != "":
+            self._toggle_call(v, rec)
+            return "break"
         if rec.get(f.key, "") != "":
             rec[f.key] = ""
             if f.key in vl.COUNT_KEYS:
@@ -434,7 +498,7 @@ class VerifyDialog(tk.Toplevel):
         rows = self.rows[s.key]
         row = max([r["_row"] for r in rows], default=vl.FIRST_ROW - 1) + 1     # 시트의 마지막 기록 아래
         rec = {f.key: "" for f in s.fields}
-        rec[LABEL] = (vl.next_label(rows) if v.months else vl.OTHER_NAMES[0]) or ""
+        rec[LABEL] = (vl.next_label(rows) if v.months else (s.label_choices or vl.OTHER_NAMES)[0]) or ""
         rec["_row"] = row
         rows.append(rec)
         self._save(s, rec)

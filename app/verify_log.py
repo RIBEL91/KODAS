@@ -25,7 +25,7 @@ DEFAULT_NAME = "주택전산검색 관계철.xlsx"
 @dataclass(frozen=True)
 class Field:
     key: str            # 칸 이름(화면에 보이는 이름)
-    kind: str           # text · date · num · total · status · memo
+    kind: str           # text · date · num · total · status · check · memo
 
 
 @dataclass(frozen=True)
@@ -35,10 +35,35 @@ class Sheet:
     fields: tuple
     status_values: tuple = ()      # 진행 상태 칸에서 고를 것(직접 적어도 된다)
     status_default: str = ""
+    label_choices: tuple = ()      # 달이 아닌 탭의 '구분'(입주자격검색) 칸에서 고를 것
+
+    @property
+    def excel_fields(self) -> tuple:
+        """예전 관계철 엑셀(Excel로 직접 읽는 것)에 있는 칸 — 소명안내·소명완료일은 KODAS에만 있다."""
+        return tuple(f for f in self.fields if f.key not in NEW_KEYS)
 
     @property
     def last_col(self) -> int:
-        return FIRST_COL + len(self.fields) - 1
+        return FIRST_COL + len(self.excel_fields) - 1
+
+
+# 갱신완료(검증완료)와 기록사항 사이: 소명안내를 체크하면 소명완료일(오늘 + 소명기간)을 자동으로 넣는다
+CALL = "소명안내"
+CALL_DUE = "소명완료일"
+CHECK_MARK = "✔"
+NEW_KEYS = (CALL, CALL_DUE)
+DEFAULT_CALL_DAYS = 10
+
+
+def call_due(today: dt.date | None = None, days: int = DEFAULT_CALL_DAYS) -> dt.date:
+    """소명안내를 체크한 날 기준 소명완료일(오늘 + 소명기간 일수)."""
+    return (today or dt.date.today()) + dt.timedelta(days=int(days))
+
+
+def set_call(rec: dict, on: bool, today: dt.date | None = None, days: int = DEFAULT_CALL_DAYS) -> None:
+    """소명안내 체크를 켜면 소명완료일을 오늘 + 소명기간으로, 끄면 둘 다 비운다."""
+    rec[CALL] = CHECK_MARK if on else ""
+    rec[CALL_DUE] = call_due(today, days) if on else ""
 
 
 MEMO = "자격검증 기록사항"          # 마지막 칸 제목(예전 이름: 소명대상/소명내용)
@@ -58,23 +83,47 @@ def norm_status(v):
 RENEW_FIELDS = (
     Field("입주자격검색", "text"), Field("요청일", "date"), Field("범정부 송신", "date"),
     Field("총계", "total"), Field("세대주", "num"), Field("배우자", "num"), Field("세대원", "num"),
-    Field("차수", "text"), Field("조사완료일", "date"), Field("갱신완료", "status"), Field(MEMO, "memo"))
+    Field("차수", "text"), Field("조사완료일", "date"), Field("갱신완료", "status"),
+    Field(CALL, "check"), Field(CALL_DUE, "date"), Field(MEMO, "memo"))
 RENEW = Sheet("갱신", "주민등록 검증결과(갱신)", RENEW_FIELDS,
               status_values=RENEW_STATUS, status_default="주민등록 검증")
-# 갱신 시트에 섞여 있던 명의변경·예비자정기 줄을 옮겨 두는 시트(갱신 시트와 같은 모양)
+# 예전 관계철 엑셀에서 명의변경·예비자정기를 함께 두던 시트(가져오기·예전 파일 올리기에만 쓴다)
 OTHER = Sheet("명의변경·예비자정기", "주민등록 검증결과(명의변경·예비자정기)", RENEW_FIELDS,
               status_values=OTHER_STATUS, status_default="자격검증 완료")
+# 2026-11-24: 명의변경과 예비자정기를 따로 둔다. 명의변경은 요청일 옆에 명의변경 신청일
+NAME_CHANGE_DATE = "명의변경 신청일"
+NAME_CHANGE = Sheet("명의변경", "주민등록 검증결과(명의변경)", (
+    Field("입주자격검색", "text"), Field("요청일", "date"), Field(NAME_CHANGE_DATE, "date"),
+    Field("범정부 송신", "date"), Field("총계", "total"), Field("세대주", "num"), Field("배우자", "num"),
+    Field("세대원", "num"), Field("차수", "text"), Field("조사완료일", "date"), Field("갱신완료", "status"),
+    Field(CALL, "check"), Field(CALL_DUE, "date"), Field(MEMO, "memo")),
+    status_values=OTHER_STATUS, status_default="자격검증 완료", label_choices=("명의변경",))
+PRELIM = Sheet("예비자정기", "주민등록 검증결과(예비자정기)", RENEW_FIELDS,
+               status_values=OTHER_STATUS, status_default="자격검증 완료",
+               label_choices=("예비자정기", "상반기 예비자정기", "하반기 예비자정기"))
 REGULAR = Sheet("주택정기", "주민등록 검증결과(주택정기)", (
     Field("입주자격검색", "text"), Field("요청일", "date"),
     Field("총계", "total"), Field("세대주", "num"), Field("배우자", "num"), Field("세대원", "num"),
     Field("차수", "text"), Field("조사완료일(문서통보일)", "date"), Field("검증완료", "status"),
-    Field(MEMO, "memo")),
+    Field(CALL, "check"), Field(CALL_DUE, "date"), Field(MEMO, "memo")),
     status_values=("검색요청", "소명안내", "소명완료", "확정"),
     status_default="검색요청")
-SHEETS = (RENEW, OTHER, REGULAR)
+SHEETS = (RENEW, NAME_CHANGE, PRELIM, REGULAR)      # KODAS에 저장하는 탭
+EXCEL_SHEETS = (RENEW, OTHER, REGULAR)              # 예전 관계철 엑셀의 시트(처음 가져오기)
 COUNT_KEYS = ("세대주", "배우자", "세대원")
 MONTH_RE = re.compile(r"(\d{2})-(\d{1,2})월")
 OTHER_NAMES = ("명의변경", "예비자정기", "상반기 예비자정기", "하반기 예비자정기")
+
+
+def split_key(label) -> str:
+    """달이 아닌 줄을 어느 탭에 둘지: '명의변경…'이면 명의변경, 나머지는 예비자정기."""
+    return NAME_CHANGE.key if str(label or "").strip().startswith("명의변경") else PRELIM.key
+
+
+def distribute(data: dict, rows: list) -> None:
+    """명의변경·예비자정기가 섞인 줄들을 두 탭에 나눠 붙인다."""
+    for r in rows:
+        data.setdefault(split_key(r.get("입주자격검색")), []).append(r)
 DONE_VALUES = ("계약완료", "승계계약완료", "자격검증 완료")
 
 
@@ -107,7 +156,7 @@ class View:
 
 
 VIEWS = (View("갱신계약", RENEW, True), View("주택정기", REGULAR, True),
-         View("명의변경·예비자정기", OTHER, False))
+         View("명의변경", NAME_CHANGE, False), View("예비자정기", PRELIM, False))
 
 
 def month_choices(today: dt.date | None = None, current: str = "") -> list[str]:
@@ -450,7 +499,7 @@ def _rows(sheet: Sheet, res: dict) -> list[dict]:
         vals = item.get("v") or []
         if not isinstance(vals, list):
             vals = [vals]
-        rec = {f.key: from_excel(f, vals[i] if i < len(vals) else None) for i, f in enumerate(sheet.fields)}
+        rec = {f.key: from_excel(f, vals[i] if i < len(vals) else None) for i, f in enumerate(sheet.excel_fields)}
         fix_years(sheet, rec)
         if any(v != "" for v in rec.values()):
             rec["_row"] = int(item["row"])
@@ -478,11 +527,11 @@ def read_all(path: str) -> Book:
     """세 시트를 한 번에 읽는다(명의변경·예비자정기 시트는 없을 수 있다)."""
     job = {"path": os.path.abspath(path), "op": "readall", "r0": FIRST_ROW, "c0": FIRST_COL,
            "head_row": HEAD_ROW,
-           "sheets": [{"key": s.key, "name": s.name, "c1": s.last_col} for s in SHEETS]}
+           "sheets": [{"key": s.key, "name": s.name, "c1": s.last_col} for s in EXCEL_SHEETS]}
     res = _run(job)
     got = res.get("sheets") or {}
     rows, missing, old = {}, [], []
-    for s in SHEETS:
+    for s in EXCEL_SHEETS:
         item = got.get(s.key) or {"missing": True}
         if item.get("missing"):
             missing.append(s.key)
@@ -492,7 +541,7 @@ def read_all(path: str) -> Book:
         if str(item.get("head") or "").strip() != MEMO:
             old.append(s.key)
     if RENEW.key in missing or REGULAR.key in missing:
-        names = [s.name for s in SHEETS if s.key in missing and s is not OTHER]
+        names = [s.name for s in EXCEL_SHEETS if s.key in missing and s is not OTHER]
         raise ExcelError("관계철에 다음 시트가 없습니다: " + ", ".join(names))
     return Book(rows, bool(res.get("live")), tuple(missing), tuple(old))
 
@@ -517,7 +566,7 @@ def backup(path: str) -> str:
 def split_other(path: str, book: Book) -> int:
     """갱신 시트의 명의변경·예비자정기 줄을 새 시트로 옮기고, 마지막 칸 제목을 '자격검증 기록사항'으로.
     옮긴 줄 수를 돌려준다. 먼저 backup()을 해 둔다."""
-    heads = [{"name": s.name, "c1": s.last_col, "text": MEMO} for s in SHEETS
+    heads = [{"name": s.name, "c1": s.last_col, "text": MEMO} for s in EXCEL_SHEETS
              if s.key in book.old_heads or (s is OTHER and OTHER.key in book.missing)]
     job = {"path": os.path.abspath(path), "op": "split", "r0": FIRST_ROW, "c0": FIRST_COL,
            "c1": RENEW.last_col, "head_row": HEAD_ROW, "sheet": RENEW.name, "target": OTHER.name,
@@ -595,6 +644,9 @@ def store_load() -> dict:
             raw = json.load(f)
     except (OSError, ValueError):
         raw = {}
+    if OTHER.key in raw:          # 예전 '명의변경·예비자정기' 탭 → 명의변경 / 예비자정기로 나눈다
+        mixed = [r for r in raw.pop(OTHER.key) or [] if isinstance(r, dict)]
+        distribute(raw, mixed)
     out = {}
     for s in SHEETS:
         rows = [{k: _dec(v) for k, v in r.items()} for r in raw.get(s.key, []) if isinstance(r, dict)]
@@ -625,13 +677,14 @@ def store_import_excel(path: str) -> int:
     """처음 한 번: 관계철 엑셀의 기록을 가져와 따로 저장한다(엑셀은 읽기만). 가져온 줄 수."""
     book = read_all(path)
     data = {s.key: [] for s in SHEETS}
-    for s in SHEETS:
-        data[s.key] = _renumber([{k: v for k, v in r.items() if k != "_row"} for r in book.rows.get(s.key, [])])
-    # 엑셀 갱신 시트에 섞여 있던 명의변경·예비자정기 줄은 따로
-    other = [r for r in data[RENEW.key] if not is_month(r.get("입주자격검색"))]
-    if other:
-        data[RENEW.key] = _renumber([r for r in data[RENEW.key] if is_month(r.get("입주자격검색"))])
-        data[OTHER.key] = _renumber(data[OTHER.key] + other)
+    clean = {s.key: [{k: v for k, v in r.items() if k != "_row"} for r in book.rows.get(s.key, [])]
+             for s in EXCEL_SHEETS}
+    data[RENEW.key] = [r for r in clean[RENEW.key] if is_month(r.get("입주자격검색"))]
+    data[REGULAR.key] = clean[REGULAR.key]
+    # 명의변경·예비자정기 시트 줄과 갱신 시트에 섞여 있던 달 아닌 줄은 명의변경 / 예비자정기로
+    distribute(data, clean[OTHER.key] + [r for r in clean[RENEW.key] if not is_month(r.get("입주자격검색"))])
+    for k in data:
+        _renumber(data[k])
     store_save(data)
     return sum(len(v) for v in data.values())
 
@@ -689,7 +742,7 @@ def store_export_xlsx(path: str) -> int:
     thin = Side(style="thin", color="A0A8B8")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     head_fill = PatternFill("solid", fgColor="DCE6F5")
-    widths = {"text": 14, "date": 13, "num": 8, "total": 8, "status": 15, "memo": 50}
+    widths = {"text": 14, "date": 13, "num": 8, "total": 8, "status": 15, "check": 9, "memo": 50}
     n = 0
     for s in SHEETS:
         ws = wb.create_sheet(s.name[:31])
@@ -752,6 +805,26 @@ def _find_ws(wb, s: Sheet):
     return None
 
 
+def _head_cols(ws, s: Sheet) -> dict:
+    """칸 제목(3·4줄)으로 칸 자리를 찾는다(예전에 받은 파일은 소명안내·소명완료일 칸이 없다).
+    제목으로 못 찾는 칸은 예전 차례대로 둔다."""
+    names = {}
+    for c in range(FIRST_COL, (ws.max_column or FIRST_COL) + 1):
+        for r in (HEAD_ROW, HEAD_ROW + 1):
+            t = re.sub(r"\s+", "", str(ws.cell(r, c).value or ""))
+            if t and t not in names:
+                names[t] = c
+    names.setdefault(re.sub(r"\s+", "", MEMO), names.get(re.sub(r"\s+", "", OLD_MEMO)))
+    cols = {}
+    for f in s.fields:
+        c = names.get(re.sub(r"\s+", "", f.key))
+        if c:
+            cols[f.key] = c
+    if len(cols) < 3:                # 제목이 거의 없으면 예전 차례(소명 칸 없이)
+        cols = {f.key: FIRST_COL + i for i, f in enumerate(s.excel_fields)}
+    return cols
+
+
 def read_xlsx(path: str) -> dict:
     """[엑셀로 받기]와 같은 양식의 파일을 읽는다 → {시트 key: [기록 …]} (파일에 있는 시트만)."""
     from openpyxl import load_workbook
@@ -768,9 +841,11 @@ def read_xlsx(path: str) -> dict:
         if "입주자격검색" not in heads:
             raise ExcelError(f"'{ws.title}' 시트의 3줄 B칸이 '입주자격검색'이 아닙니다. "
                              "[엑셀로 받기]로 받은 양식에 고쳐서 올려 주세요.")
+        cols = _head_cols(ws, s)
         rows = []
         for r in range(FIRST_ROW, ws.max_row + 1):
-            rec = {f.key: _from_xlsx(f, ws.cell(r, FIRST_COL + i).value) for i, f in enumerate(s.fields)}
+            rec = {f.key: (_from_xlsx(f, ws.cell(r, cols[f.key]).value) if f.key in cols else "")
+                   for f in s.fields}
             if all(v == "" for v in rec.values()):
                 continue
             fix_years(s, rec)
@@ -778,6 +853,23 @@ def read_xlsx(path: str) -> dict:
                 rec["총계"] = total_of(rec)
             rows.append(rec)
         out[s.key] = rows
+    if NAME_CHANGE.key not in out and PRELIM.key not in out:   # 예전에 받은 파일(명의변경·예비자정기 한 시트)
+        ws = _find_ws(wb, OTHER)
+        if ws is not None:
+            cols = _head_cols(ws, OTHER)
+            mixed = []
+            for r in range(FIRST_ROW, ws.max_row + 1):
+                rec = {f.key: (_from_xlsx(f, ws.cell(r, cols[f.key]).value) if f.key in cols else "")
+                       for f in OTHER.fields}
+                if all(v == "" for v in rec.values()):
+                    continue
+                fix_years(OTHER, rec)
+                if any(rec.get(k) not in ("", None) for k in COUNT_KEYS):
+                    rec["총계"] = total_of(rec)
+                mixed.append(rec)
+            split = {NAME_CHANGE.key: [], PRELIM.key: []}
+            distribute(split, mixed)
+            out.update(split)
     if not out:
         raise ExcelError("자격검증 기록 시트가 없습니다. 시트 이름이 다음 중 하나여야 합니다:\n"
                          + "\n".join(s.name for s in SHEETS))
@@ -804,11 +896,15 @@ def store_import_xlsx(path: str) -> dict:
     data = store_load()
     for key, rows in got.items():
         data[key] = _renumber(rows)
-    if OTHER.key not in got and RENEW.key in got:     # 명의변경 시트 없이 갱신 시트에 섞여 왔으면 나눈다
+    if RENEW.key in got:     # 갱신 시트에 명의변경·예비자정기 줄이 섞여 왔으면 나눈다
         other = [r for r in data[RENEW.key] if not is_month(r.get("입주자격검색"))]
         if other:
             data[RENEW.key] = _renumber([r for r in data[RENEW.key] if is_month(r.get("입주자격검색"))])
-            data[OTHER.key] = _renumber(data[OTHER.key] + other)
-            got[OTHER.key] = other
+            moved = {NAME_CHANGE.key: [], PRELIM.key: []}
+            distribute(moved, other)
+            for k, rs in moved.items():
+                if rs:
+                    data[k] = _renumber(data[k] + rs)
+                    got.setdefault(k, rs)
     store_save(data)
     return {k: len(data[k]) for k in got}

@@ -318,6 +318,9 @@ class Template:
     extras: list = field(default_factory=list)   # 본문에 안 나오고 계산에만 쓰는 입력칸(머리말 '입력:')
     carry: list = field(default_factory=list)    # 작성 후 다음 기본값으로 넘길 값 [(받을 칸, 줄 칸)]
     external_receiver: bool = False   # 머리말 '수신자찾기: 외부유통문서' — 수신자를 외부유통문서에서 검색해 넣는다
+    name_after: str = ""    # 머리말 '이름칸뒤: 회신기한' — 받는 분 이름 칸을 이 칸 바로 아래에 둔다
+    front: list = field(default_factory=list)    # 머리말 '앞칸: 계약자' — 이 입력칸을 받는 분 이름 칸 위에 둔다
+    masks: list = field(default_factory=list)    # 머리말 '가림: 이름, 양도인' — 공문에 넣을 때 이름 가운데를 가린다(오영철 → 오ㅇ철)
 
     @property
     def _number(self) -> str:
@@ -347,7 +350,7 @@ class Template:
         """[(항목, 대표 형식)] 처음 나온 순서. 같은 항목은 한 번만.
         달 형식으로 먼저 나왔어도 하루 날짜 형식이 함께 쓰이면 하루를 고르는 칸으로 한다."""
         seen: dict[str, str] = {}
-        for m in DATE_RE.finditer(self._all_text()):
+        for m in DATE_RE.finditer(self._all_text() + chr(10) + chr(10).join(self.extras)):   # 머리말 '입력:'의 날짜 칸도
             name, style = m.group(1).strip(), (m.group(2) or "요일").strip()
             if name not in seen or (seen[name] not in DAY_STYLES and style in DAY_STYLES
                                     and seen[name] in MONTH_STYLES):
@@ -425,7 +428,10 @@ def parse(text: str, path: str = "") -> Template:
                     none_label=meta.get("없음표시", ""), bundle=meta.get("묶음", ""),
                     order=int(meta["순서"]) if meta.get("순서", "").isdigit() else 0,
                     extras=extras, carry=carry,
-                    external_receiver=meta.get("수신자찾기", "") == EXTERNAL_RECEIVER)
+                    external_receiver=meta.get("수신자찾기", "") == EXTERNAL_RECEIVER,
+                    name_after=meta.get("이름칸뒤", ""),
+                    front=[x.strip() for x in re.split(r"[,，;]", meta.get("앞칸", "")) if x.strip()],
+                    masks=[x.strip() for x in re.split(r"[,，;]", meta.get("가림", "")) if x.strip()])
 
 
 def load(path: str) -> Template:
@@ -468,6 +474,12 @@ def dump(t: Template) -> str:
         head.append(f"묶음: {t.bundle}")
     if t.order:
         head.append(f"순서: {t.order}")
+    if t.name_after:
+        head.append(f"이름칸뒤: {t.name_after}")
+    if t.front:
+        head.append("앞칸: " + ", ".join(t.front))
+    if t.masks:
+        head.append("가림: " + ", ".join(t.masks))
     head += [f"입력: {s}" for s in t.extras]
     head += [f"이월: {a} <- {b}" for a, b in t.carry]
     return "\n".join(head) + "\n---\n" + t.body.strip("\n") + "\n"
@@ -521,6 +533,32 @@ def _type_sub(spec: str, rent_type: str) -> str:
         if rent_type and rent_type in keys.split('·'):
             return val.strip()
     return ', '.join(f'{v.strip()}({k.strip()})' for k, v in pairs)
+
+MASK_CHAR = "ㅇ"
+
+
+def mask_name(text: str) -> str:
+    """이름 가운데 글자를 가린다: 오영철 → 오ㅇ철, 남궁민수 → 남ㅇㅇ수, 김철 → 김ㅇ.
+    여러 명(쉼표·띄어쓰기로 나눔)이면 한 명씩 가린다. 한글 이름이 아닌 글자는 그대로."""
+    def one(m):
+        w = m.group(0)
+        if len(w) == 2:
+            return w[0] + MASK_CHAR
+        return w[0] + MASK_CHAR * (len(w) - 2) + w[-1]
+    return re.sub(r"[가-힣]{2,}", one, text or "")
+
+
+def masked_values(t: "Template", values: dict) -> dict:
+    """서식 머리말 '가림:'에 적은 칸(이름 또는 입력칸 이름)의 값을 가려서 돌려준다."""
+    if not t.masks:
+        return values
+    out = dict(values)
+    for key in t.masks:
+        for k in (key, "입력:" + key):
+            if out.get(k):
+                out[k] = mask_name(str(out[k]))
+    return out
+
 
 def fill(text: str, values: dict, dates: dict, extras: list | None = None) -> str:
     """{날짜:…}와 {이름} 등을 채운다. 값이 없는 빈칸은 그대로 둔다(미리보기에서 보이도록).
@@ -621,6 +659,10 @@ def add_title_note(title: str, note: str) -> str:
 def fill_receiver(text: str, values: dict) -> str:
     """수신자 줄. 주소는 선택 입력이라 비어 있으면 빼고 공백을 정리한다."""
     v = dict(values)
+    for m in INPUT_RE.finditer(text):     # 수신자 칸을 비우면 처음 값({입력:수신자=…})으로
+        key = "입력:" + m.group(1).strip()
+        if m.group(2) and not str(v.get(key, "") or "").strip():
+            v[key] = m.group(2).strip()
     if not str(v.get("주소", "") or "").strip():
         text = text.replace("{주소}", "")
     return " ".join(fill(text, v, {}).split())

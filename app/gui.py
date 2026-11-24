@@ -47,7 +47,7 @@ ORANGE = ui_kit.PRIMARY     # 단추·제목 색(예전 이름 그대로)
 BROWN, SUB = ui_kit.TEXT, ui_kit.SUB   # 본문 글자, 설명 글자
 LINE = ui_kit.LINE          # 옅은 구분선
 SELECT_BG = ui_kit.PRIMARY_SOFT       # 목록에서 고른 줄
-LINK_KEYS = ("문서링크", "심사결과링크", "소명안내링크")   # 자동 작성 때 홈넷 [문서링크]로 채우는 칸
+LINK_KEYS = ("문서링크", "심사결과링크", "소명안내링크", "명의변경심사링크")   # 자동 작성 때 홈넷 [문서링크]로 채우는 칸
 TEXT_OPTS = dict(bg="white", relief="flat", borderwidth=0, highlightthickness=1,
                  highlightbackground="#e0e0e0", highlightcolor=ACCENT, padx=6, pady=4)
 INFO_FIELDS = [("단지명", "단지명", "예: 광주우산3 (관리소명·약칭은 자동)"),
@@ -147,15 +147,23 @@ def auto_date_rule(label: str, fields: dict):
         return lambda dates, today: months_before(dates["검색월"], 13) if dates.get("검색월") else None
     if label == "안내문시행일":
         return lambda dates, today: today
+    # 보증금 인상분 분할 납부: 2회차 = 계약 만료월 6개월 뒤 달 말일, 3회차 = 1년 뒤 달 말일
+    for name, n in (("2회차납부일", 6), ("3회차납부일", 12)):
+        if label == name and "계약 만료월" in fields:
+            return lambda dates, today, n=n: (month_end(months_before(dates["계약 만료월"], -n))
+                                              if dates.get("계약 만료월") else None)
     return None
 
 
 KEY_DATES = ("갱신월", "제출기한")      # 꼭 넣어야 하는 날짜(빨간 *)
-RECORD_FIELDS = ("차수", "자격검색요청일", "조사완료일")   # 자격검증 기록에서 채우는 입력칸
+RECORD_FIELDS = ("차수", "자격검색요청일", "조사완료일", "명의변경신청일")   # 자격검증 기록에서 채우는 입력칸
 RECORD_COUNTS = ("총계", "세대주", "배우자", "세대원")        # {기록:…}으로 넣는 요청건수
-ROUND_DATES = ("검색결과통보일",)        # 차수로 홈넷에서 찾아 채우는 날짜
+ROUND_DATES = ("검색결과통보일",)
+OTHER_SHEET = "명의변경"                   # 자격검증 기록 탭(권리의무승계 서식의 차수·요청일)
+ROUND_SHEETS = (OTHER_SHEET, "예비자정기")   # 달이 아니라 차수(또는 이름·최근 줄)로 찾는 탭
 AUTO_DATE_NOTES = {"안내문시행일": "작성일", "대상세대 갱신월": "검색월 13개월 전",
-                   "재임대월": "갱신월 2개월 전"}   # 나머지는 갱신월 말일
+                   "재임대월": "갱신월 2개월 전", "2회차납부일": "계약 만료월 6개월 뒤 말일",
+                   "3회차납부일": "계약 만료월 1년 뒤 말일"}   # 나머지는 갱신월 말일
 DATE_MONTH_AUTO = ("대상세대 갱신월", "재임대월")     # 달만 보이는 자동 날짜
 
 
@@ -1053,6 +1061,7 @@ class App:
                   "quality_prev_xlsx": self.cfg.get("quality_prev_xlsx", ""),
                   "quality_ledger_year": self.cfg.get("quality_ledger_year"),
                   "quality_my_items": self.cfg.get("quality_my_items", {}),
+                  "call_days": self.cfg.get("call_days", 10),             # 자격검증 기록: 소명기간(일)
                   "wise_region": self.cfg.get("wise_region", ""),        # 원터치 자동작성의 WISE 지역본부   # 담당자별 [내 항목 고르기]
                   "quality_extra_xlsx_list": self.cfg.get("quality_extra_xlsx_list")
                   or ([self.cfg["quality_extra_xlsx"]] if self.cfg.get("quality_extra_xlsx") else []),   # 근거 보태기(최대 5개)
@@ -1418,7 +1427,9 @@ class App:
             ttk.Label(f, text="📎 수신자 엑셀로 보내므로 받는 분 이름·동호는 넣지 않습니다",
                       foreground="#1a7f37").grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=4)
             r += 1
+        self.name_row = None
         if uses("이름") and not by_excel:
+            self.name_row = r
             label = sender.name_hint or ("받는 분 이름" if not sender.internal else "이름")
             lb = ttk.Label(f, text="* " + label, font=FONT_B)
             lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
@@ -1485,7 +1496,10 @@ class App:
         defaults = {k: v for d in reversed(docs) for k, v in d.input_defaults().items()}
         uses_link = "차수" in inputs and any(d.uses(k) for d in docs for k in LINK_KEYS)
         self.uses_review = any(d.uses("심사결과링크") for d in docs)    # 소명결과: 차수로 입주자격심사 결과도 찾는다
-        if uses_link and "자격검색요청일" not in inputs:
+        if uses_link and any(d.uses("명의변경심사링크") for d in docs):
+            tip = ("차수를 넣으면 자동 작성 때 [문서링크]에서 '입주자격심사 결과(명의변경, N차)' 문서를 찾아 "
+                   "관련 문서번호 자리에 넣습니다")
+        elif uses_link and "자격검색요청일" not in inputs:
             tip = ("차수를 넣으면 자동 작성 때 [문서링크]에서 같은 차수의 '입주자격심사 결과'와 "
                    "같은 차수·월의 '소명 안내' 문서를 찾아 관련 문서번호 자리에 넣습니다")
         elif any(x.endswith("일") for x in inputs):
@@ -1498,6 +1512,7 @@ class App:
             self._help(tip)
         # 수기 입력 칸은 한 줄에 하나씩(이름 칸 아래 같은 열) — 버튼·안내가 옆 칸을 밀지 않게
         options = {k: v for d in reversed(docs) for k, v in d.input_options().items()}
+        recv_inputs = {m.group(1).strip() for d in docs for m in dtpl.INPUT_RE.finditer(d.receiver)}
         for label in inputs:
             lb = ttk.Label(f, text="* " + label, font=FONT_B)
             lb.grid(row=r, column=0, sticky="e", padx=8, pady=4)
@@ -1524,8 +1539,12 @@ class App:
                 e.bind("<<DateEntrySelected>>", lambda _e: self._refresh())
                 e.delete(0, "end")
             else:
-                e = ttk.Entry(box, width=18)
-            self.required.append((lb, e))
+                e = ttk.Entry(box, width=40 if label in recv_inputs else 18)
+            if label in recv_inputs and defaults.get(label):     # 수신자 칸: 비우면 처음 값이 들어가므로 꼭 넣을 칸이 아니다
+                lb.config(text=label, font=FONT)
+                self._help(f"{label}: 비워 두면 '{defaults[label]}'(으)로 들어갑니다.")
+            else:
+                self.required.append((lb, e))
             e.insert(0, old_values.get("입력:" + label, defaults.get(label, ""))
                      or (dtpl.fmt_date(today, "일") if is_date else "")
                      or (str(last_quarter(today)[0]) if label == "연도" and "분기" in inputs else ""))
@@ -1547,6 +1566,8 @@ class App:
             if is_date:
                 self._help(f"{label}: 칸을 누르면 달력이 열립니다. 달력에서 날짜를 고르세요.")
             r += 1
+        self._move_front(f, [x for d in docs for x in d.front if x in self.text_widgets],
+                         next((d.name_after for d in docs if d.name_after), ""))
         if self.auto_dates or self.found_labels:
             self.auto_label = ttk.Label(f, foreground="#1a5fb4")
             self.auto_label.grid(row=r, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 4))
@@ -1570,9 +1591,60 @@ class App:
             ttk.Label(f, text="이 서식은 넣을 이름·날짜가 없습니다. 아래 본문을 확인하고 필요하면 직접 고쳐 주세요.",
                       foreground="#555").grid(row=0, column=0, padx=8, pady=8)
 
+    @staticmethod
+    def _move_row(f, src: int, dst: int):
+        """f의 src 줄을 dst 자리로 옮기고 사이 줄은 한 칸씩 민다."""
+        if src == dst:
+            return
+        for w in f.grid_slaves():
+            wr = int(w.grid_info()["row"])
+            if wr == src:
+                w.grid_configure(row=dst)
+            elif dst <= wr < src:
+                w.grid_configure(row=wr + 1)
+            elif src < wr <= dst:
+                w.grid_configure(row=wr - 1)
+
+    @staticmethod
+    def _label_row(f, label: str) -> int:
+        """칸 이름표(앞의 '* ' 빼고)가 label인 줄 번호. 없으면 -1."""
+        for w in f.grid_slaves(column=0):
+            try:
+                text = str(w.cget("text"))
+            except tk.TclError:
+                continue
+            if text.lstrip("* ").strip() == label:
+                return int(w.grid_info()["row"])
+        return -1
+
+    def _move_front(self, f, labels, name_after: str = ""):
+        """머리말 '앞칸:'의 입력칸 줄을 받는 분 이름 칸 자리(사람 칸 맨 위)로 올리고,
+        '이름칸뒤:'가 있으면 받는 분 이름 줄을 그 칸 바로 아래로 내린다. 처음 커서는 맨 위 칸."""
+        top = self.name_row
+        if top is None:
+            return
+        name_box = self.name_entry.master if self.name_entry is not None else None
+        for label in reversed(labels):
+            box = self.text_widgets[label].master
+            row = int(box.grid_info().get("row", -1))
+            if row > top:
+                self._move_row(f, row, top)
+        if name_after and name_box is not None:
+            src, ref = int(name_box.grid_info()["row"]), self._label_row(f, name_after)
+            if ref >= 0:
+                self._move_row(f, src, ref if ref > src else ref + 1)
+        # Tab 순서를 화면 줄 순서로(쌓임 순서 = Tab 순서)
+        boxes = sorted((w for w in f.grid_slaves() if int(w.grid_info()["column"]) >= 1),
+                       key=lambda w: int(w.grid_info()["row"]))
+        for w in boxes:
+            w.lift()
+        if labels and not self._overlay_shown():
+            self.text_widgets[labels[0]].focus_set()
+
     # ---------- 자격검증 기록 → 공문 ----------
     def _record_sheet(self, docs):
-        """이 공문이 쓸 자격검증 기록 탭: 갱신월이 있으면 갱신, 검색월이 있으면 주택정기.
+        """이 공문이 쓸 자격검증 기록 탭: 갱신월이 있으면 갱신, 검색월이 있으면 주택정기,
+        권리의무승계(명의변경 신청일이 있는 서식)면 명의변경 탭의 줄.
         차수를 넣는 서식이거나 {기록:…} 칸이 있는 서식만."""
         import verify_log as vl
         if not any("차수" in d.input_fields() or dtpl.RECORD_PREFIX in d._all_text() for d in docs):
@@ -1582,6 +1654,10 @@ class App:
             return vl.RENEW
         if "검색월" in labels:
             return vl.REGULAR
+        if "명의변경신청일" in labels or any("권리의무승계" in d.title or "명의변경" in d.title for d in docs):
+            return vl.NAME_CHANGE
+        if any("예비자" in d.title for d in docs):
+            return vl.PRELIM
         return None
 
     def _load_verify_book(self, force: bool = False):
@@ -1619,14 +1695,44 @@ class App:
         sheet = getattr(self, "record_sheet", None)
         if sheet is None:
             return None, None
+        if sheet.key in ROUND_SHEETS:                # 명의변경·예비자정기 줄은 달이 아니라 차수·이름으로 찾는다
+            return sheet, sheet.key
         return sheet, dates.get("검색월" if sheet.key == "주택정기" else "갱신월")
 
+    def _record_name(self, month) -> str:
+        if month in ROUND_SHEETS:
+            return month
+        return f"{month.year % 100:02d}-{month.month}월"
+
+    def _name_change_record(self, book, key: str = OTHER_SHEET) -> dict | None:
+        """명의변경(또는 예비자정기) 탭의 줄: 차수를 직접 적었으면 그 차수 줄, 아니면 입주자격검색 칸에
+        받는 분 이름이 들어 있는 줄, 없으면 요청일이 가장 늦은 줄."""
+        rows = [r for r in book.rows.get(key, [])
+                if key != OTHER_SHEET or str(r.get("입주자격검색", "")).strip().startswith("명의변경")]
+        if not rows:
+            return None
+        n = self._round()
+        if n and n != getattr(self, "record_auto", {}).get("차수"):     # 기록에서 넣은 값이 아니라 직접 적은 차수
+            hit = [r for r in rows if re.sub(r"\D", "", str(r.get("차수") or "")) == n]
+            if hit:
+                return hit[-1]
+        name = self.name_entry.get().strip() if getattr(self, "name_entry", None) is not None else ""
+        if name:
+            hit = [r for r in rows if name in str(r.get("입주자격검색", ""))]
+            if hit:
+                return hit[-1]
+        return max(rows, key=lambda r: (r["요청일"] if isinstance(r.get("요청일"), dt.date) else dt.date.min,
+                                        r.get("_row", 0)))
+
     def _verify_record(self, dates: dict) -> dict | None:
-        """그 달(갱신월·검색월)의 자격검증 기록 줄. 같은 달 줄이 여럿이면 요청건수(총계)가 가장 큰 줄."""
+        """그 달(갱신월·검색월)의 자격검증 기록 줄. 같은 달 줄이 여럿이면 요청건수(총계)가 가장 큰 줄.
+        권리의무승계 서식은 명의변경 줄(_name_change_record)."""
         sheet, month = self._record_month(dates)
         book = getattr(self, "verify_cache", None)
         if sheet is None or not month or not book:
             return None
+        if month in ROUND_SHEETS:
+            return self._name_change_record(book, month)
         label = f"{month.year % 100:02d}-{month.month}월"
         cands = [r for r in book.rows.get(sheet.key, []) if str(r.get("입주자격검색", "")).strip() == label]
         if not cands:
@@ -1675,7 +1781,7 @@ class App:
             return
         if not month:
             return
-        name = f"{month.year % 100:02d}-{month.month}월"
+        name = self._record_name(month)
         rec = self._verify_record(dates)
         if rec is None:
             lbl.config(text=f"📒 자격검증 기록({sheet.key})에 {name} 줄이 없습니다 — 차수·날짜·요청건수는 직접 넣어 주세요",
@@ -1683,7 +1789,8 @@ class App:
             return
         want = {"차수": re.sub(r"\D", "", str(rec.get("차수") or "")),
                 "자격검색요청일": rec.get("요청일"),
-                "조사완료일": rec.get("조사완료일") or rec.get("조사완료일(문서통보일)")}
+                "조사완료일": rec.get("조사완료일") or rec.get("조사완료일(문서통보일)"),
+                "명의변경신청일": rec.get("명의변경 신청일")}
         auto, init = self.record_auto, getattr(self, "record_initial", {})
         for label, val in want.items():
             if val in ("", None):
@@ -1718,6 +1825,8 @@ class App:
         if rec.get("총계") not in ("", None):
             parts.append(f"요청 {rec['총계']}건(세대주 {rec.get('세대주', 0)} · 배우자 {rec.get('배우자', 0)} · "
                          f"세대원 {rec.get('세대원', 0)})")
+        if month in ROUND_SHEETS:
+            name = str(rec.get("입주자격검색", "")).replace(chr(10), " ")
         lbl.config(text=f"📒 자격검증 기록({sheet.key}) {name}: " + " · ".join(p for p in parts if p)
                    + "  → 공문에 넣었습니다(직접 고친 칸은 그대로)", foreground="#1a7f37")
 
@@ -1756,6 +1865,10 @@ class App:
             "문서링크": DocLink(f"{n}차", (f"{ledger.NOTICE_TITLE}({n}차",), f"[문서링크: {n}차 결과 통보]"),
             "심사결과링크": DocLink(f"{n}차", ("입주자격심사 결과",), f"[문서링크: {n}차 입주자격심사 결과]",
                                 prefer=(round_re,), min_prefer=1),
+            # 권리의무승계 완료: '입주자격심사 결과(명의변경, N차)'
+            "명의변경심사링크": DocLink(f"{n}차", ("입주자격심사 결과", "명의변경"),
+                                    f"[문서링크: 입주자격심사 결과(명의변경, {n}차)]",
+                                    prefer=(round_re,), min_prefer=1),
         }
         # 소명 안내문은 제목 형식이 여러 가지라 '소명'으로 찾고 같은 차수·같은 월이 맞는 문서를 고른다
         month = dates.get("갱신월")
@@ -1803,10 +1916,25 @@ class App:
                     review = ledger.find_review(self.driver, int(raw), self.log)
                 except ledger.LedgerError as ex:
                     self.log(f"⚠️ {ex}")
-            return ledger.find_notice(self.driver, int(raw), self.log), review
+            try:
+                return ledger.find_notice(self.driver, int(raw), self.log), review
+            except ledger.LedgerError as ex:
+                if not then:          # 차수 칸 Enter: 못 찾았다고 알린다
+                    raise
+                # [자동 작성]에서 왔으면 못 찾아도 멈추지 않고 서식함 → 표준기안문 작성으로 넘어간다
+                self.log(f"⚠️ {ex} 날짜는 자격검증 기록 값으로 두고 표준기안문 작성을 이어 갑니다.")
+                return None, review
 
         def ok(result):
             n, review = result
+            if n is None:
+                self.found = (raw, {})
+                if review and "갱신월" in self.date_widgets:
+                    self.date_widgets["갱신월"].set_date(review.renewal_month)
+                self._refresh()
+                if then:
+                    then()
+                return
             if review and "갱신월" in self.date_widgets:
                 self.date_widgets["갱신월"].set_date(review.renewal_month)
                 self.log(f"  {review.title} — {review.doc_number}, 갱신월 {review.renewal_month:%Y-%m}")
@@ -1938,6 +2066,7 @@ class App:
         """(제목, 수신자, 본문 텍스트). doc을 주지 않으면 1안(고른 서식)."""
         t = doc or self.current
         values, dates = self._values()
+        values = dtpl.masked_values(t, values)      # 머리말 '가림:' 칸은 이름 가운데를 가린다
         title = dtpl.fill(t.title, values, dates, t.extras)
         if t is self.current and self._none(t):
             title = dtpl.add_title_note(title, t.none_label)
@@ -2229,7 +2358,8 @@ class App:
 
             def notify(m):
                 self.q.put(("call", lambda: messagebox.showinfo("직접 해 주실 일", m)))
-            return homnet_draft.create_drafts(self.driver, parts, log=self.log, notify=notify)
+            return homnet_draft.create_drafts(self.driver, parts, log=self.log, notify=notify,
+                                              password=hpw)
 
         values_now = self._values()[0]
         file_name = self.current.file_name
@@ -3088,9 +3218,10 @@ def selftest() -> int:
               "단지명": "가나1단지", "담당자": "김담당", "전화번호": "031-000-0000"}
     for t in items:
         dates = {k: default_date(k, today) for k, _ in t.date_fields()}
-        title = dtpl.fill(t.title, values, dates, t.extras)
-        receiver = dtpl.INTERNAL if t.internal else dtpl.fill_receiver(t.receiver, values)
-        body = dtpl.fill(t.body, values, dates, t.extras)
+        v = dtpl.masked_values(t, values)
+        title = dtpl.fill(t.title, v, dates, t.extras)
+        receiver = dtpl.INTERNAL if t.internal else dtpl.fill_receiver(t.receiver, v)
+        body = dtpl.fill(t.body, v, dates, t.extras)
         with open(os.path.join(out, t.file_name + ".html"), "w", encoding="utf-8") as f:
             f.write(dtpl.preview_html(title, receiver, dtpl.to_html(body, emph=not t.internal)))
     lines = [f"서식 {len(items)}개 변환, 오류 {len(errors)}개 → {out}"] + [f"  {e}" for e in errors]

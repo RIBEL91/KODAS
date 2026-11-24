@@ -54,7 +54,7 @@ def _request_date(title: str) -> dt.date | None:
 
 def pick_notice(rows: list[dict], round_no: int) -> Notice | None:
     """검색 결과 줄들에서 N차 결과 통보를 고른다. '요청건' 문서를 먼저, 같으면 최신(위쪽)."""
-    pat = re.compile(rf"{re.escape(NOTICE_TITLE)}\s*\(\s*{round_no}\s*차\s*[,)]")
+    pat = re.compile(rf"주택소유\s*전산\s*검색\s*결과\s*통보\s*\(\s*{round_no}\s*차(?!\d)")
     found = []
     for row in rows:
         texts = [t.strip() for t in row.get("text", []) if t and t.strip() not in ("null", "-1")]
@@ -165,18 +165,30 @@ def search_register(driver, words: str) -> None:
                           words)
 
 
+def _search_pick(driver, words_list, pick, wait=12):
+    """검색어를 차례로 넣어 보며 pick(rows)이 찾은 첫 결과를 돌려준다(없으면 None)."""
+    for words in words_list:
+        search_register(driver, words)
+        end = time.time() + wait
+        while time.time() < end:
+            time.sleep(1)
+            try:
+                rows = json.loads(driver.execute_script(_JS_ROWS) or "[]")
+            except Exception:
+                continue
+            got = pick(rows)
+            if got:
+                return got
+    return None
+
+
 def find_notice(driver, round_no: int, log) -> Notice:
     """기록물등록대장에서 N차 결과 통보를 찾는다. 목록만 읽고 아무것도 바꾸지 않는다."""
     log(f"기록물등록대장에서 '{NOTICE_TITLE}({round_no}차' 를 찾습니다...")
     open_register(driver)
-    search_register(driver, f"{NOTICE_TITLE}({round_no}차")
-    notice, end = None, time.time() + 20
-    while time.time() < end:
-        time.sleep(1)
-        rows = json.loads(driver.execute_script(_JS_ROWS) or "[]")
-        notice = pick_notice(rows, round_no)
-        if notice:
-            break
+    # 제목 띄어쓰기·괄호가 조금 달라도 찾도록 검색어를 넓혀 가며 찾는다
+    notice = _search_pick(driver, (f"{NOTICE_TITLE}({round_no}차", f"{round_no}차", "전산검색 결과"),
+                          lambda rows: pick_notice(rows, round_no))
     driver.switch_to.default_content()
     if not notice:
         raise LedgerError(f"기록물등록대장(올해)에서 '{NOTICE_TITLE}({round_no}차…' 문서를 찾지 못했습니다.")
@@ -198,7 +210,8 @@ class Review:
 
 def pick_review(rows: list[dict], round_no: int) -> Review | None:
     """검색 결과 줄들에서 '입주자격심사 결과(2026년 12월 갱신, N차)'를 고른다. 같으면 최신(위쪽)."""
-    pat = re.compile(rf"{REVIEW_TITLE}\s*\(\s*(\d{{4}})년\s*(\d{{1,2}})월\s*갱신\s*,\s*{round_no}\s*차\s*[,)]")
+    pat = re.compile(rf"입주자격\s*심사\s*결과\s*\(\s*(\d{{4}})\s*년\s*(\d{{1,2}})\s*월\s*갱신[^)]*?"
+                     rf"(?<!\d){round_no}\s*차(?!\d)")
     for row in rows:
         texts = [t.strip() for t in row.get("text", []) if t and t.strip() not in ("null", "-1")]
         title = next((t for t in texts if pat.search(t)), "")
@@ -214,14 +227,8 @@ def find_review(driver, round_no: int, log) -> Review:
     """기록물등록대장에서 N차 입주자격심사 결과를 찾는다. 목록만 읽고 아무것도 바꾸지 않는다."""
     log(f"기록물등록대장에서 '{REVIEW_TITLE}(… {round_no}차)' 를 찾습니다...")
     open_register(driver)
-    search_register(driver, f"갱신, {round_no}차")
-    review, end = None, time.time() + 20
-    while time.time() < end:
-        time.sleep(1)
-        rows = json.loads(driver.execute_script(_JS_ROWS) or "[]")
-        review = pick_review(rows, round_no)
-        if review:
-            break
+    review = _search_pick(driver, (f"갱신, {round_no}차", f"{round_no}차", REVIEW_TITLE),
+                          lambda rows: pick_review(rows, round_no))
     driver.switch_to.default_content()
     if not review:
         raise LedgerError(f"기록물등록대장(올해)에서 '{REVIEW_TITLE}(… {round_no}차)' 문서를 찾지 못했습니다.")

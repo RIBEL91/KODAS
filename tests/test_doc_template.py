@@ -11,7 +11,8 @@ D = dt.date(2026, 11, 6)   # 금요일
 VALUES = {"이름": "홍길동", "주소": "101동 1001호", "관리소": "가나관리소",
           "단지명": "가나1단지", "담당자": "김담당", "전화번호": "031-000-0000", "세대수": "25",
           "문서링크": "주거복지실-2044(2026.09.03.)", "심사결과링크": "가나관리소-1700(2026. 9. 10.)",
-          "소명안내링크": "가나관리소-1701(2026. 9. 10.)", "중복입주링크": "주거복지실-1737(2026.07.22.)"}
+          "소명안내링크": "가나관리소-1701(2026. 9. 10.)", "중복입주링크": "주거복지실-1737(2026.07.22.)",
+          "명의변경심사링크": "가나관리소-1140(2026. 6. 18.)"}
 
 
 def test_fmt_date():
@@ -283,7 +284,8 @@ def test_duplicate_occupancy_quarter():
     t = next(x for x in dtpl.load_all(paths.template_dir())[0] if x.file_name.startswith("36_"))
     assert t.input_kinds().get("분기") == "선택" and t.input_options()["분기"] == ["1", "2", "3", "4"]
     assert t.uses("중복입주링크")
-    v = {"입력:연도": "2026", "입력:분기": "2", "중복입주링크": "주거복지실-1737(2026.07.22.)"}
+    v = {"입력:연도": "2026", "입력:분기": "2", "중복입주링크": "주거복지실-1737(2026.07.22.)",
+          "명의변경심사링크": "가나관리소-1140(2026. 6. 18.)"}
     title = dtpl.fill(t.title, v, {})
     assert dtpl.add_title_note(title, t.none_label) == "2026년 2분기 임대주택 중복입주 결과 보고(소명대상 없음)"
     assert t.options == ["7_중복입주에 따른 소명 안내(분기 정기)"]
@@ -331,3 +333,14 @@ def test_dates_kept_on_one_line():
     assert "(2026.11.12.)" in h and "2026. 11." not in h
     assert dt_.keep_dates_together("1. 2. 3.") == "1. 2. 3."
     assert dt_.keep_dates_together("2026. 11. 까지") == "2026.11. 까지"
+
+
+def test_mask_name_and_header():
+    assert dtpl.mask_name("오영철") == "오ㅇ철"
+    assert dtpl.mask_name("남궁민수") == "남ㅇㅇ수"
+    assert dtpl.mask_name("김철") == "김ㅇ"
+    assert dtpl.mask_name("오영철, 김영희") == "오ㅇ철, 김ㅇ희"
+    t = dtpl.parse("제목: 완료({입력:차수}차)\n가림: 이름, 양도인\n---\n{이름} {입력:양도인} {입력:차수}")
+    assert t.masks == ["이름", "양도인"] and "가림: 이름, 양도인" in dtpl.dump(t)
+    v = dtpl.masked_values(t, {"이름": "오영철", "입력:양도인": "김영희", "입력:차수": "23"})
+    assert dtpl.fill(t.body, v, {}) == "오ㅇ철 김ㅇ희 23"
