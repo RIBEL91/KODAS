@@ -25,7 +25,7 @@ import roster
 import settings_store
 import ui_kit
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 FONT = (ui_kit.FONT, 10)
 FONT_B = (ui_kit.FONT, 10, "bold")
 # 수신자 엑셀 업로드 칸: 눈에 띄게 주황 테두리·연한 바탕
