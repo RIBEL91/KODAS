@@ -47,7 +47,7 @@ def board_file(entry: dict) -> str:
 
 
 def load_boards() -> list[dict]:
-    """내가 만든 일정표 목록. 목록 파일이 없으면 '나의 업무 일정표' 하나(나의업무일정.json)."""
+    """내가 만든 일정표 목록. 목록 파일이 없으면 빈 목록(나의 공문·업무 일정표 탭 하나만 보인다)."""
     try:
         with open(boards_path(), encoding="utf-8") as f:
             raw = json.load(f)
@@ -55,7 +55,7 @@ def load_boards() -> list[dict]:
                for b in raw.get("boards", []) if isinstance(b, dict) and b.get("name") and b.get("file")]
         return out
     except (OSError, ValueError, AttributeError, KeyError):
-        return [{"name": "나의 업무 일정표", "file": MYWORK_NAME}]
+        return []
 
 
 def save_boards(boards: list[dict]) -> None:
@@ -90,10 +90,10 @@ def merged_path() -> str:
 
 
 def merged_defaults() -> list[dict]:
-    """합친 파일이 처음 없을 때: 예전 나의공문.json 공문 + 업무일정.json 업무(없으면 기본 업무)를 한 목록으로.
-    예전 두 파일은 지우지 않고 그대로 둔다."""
+    """합친 파일이 처음 없을 때: 예전 나의공문.json 공문 + 업무일정.json 업무를 한 목록으로(없으면 빈 목록 —
+    처음·초기화 뒤에는 기록 없이 기능만). 예전 두 파일은 지우지 않고 그대로 둔다."""
     docs = load(mydocs_path(), list)
-    work = load(store_path(), default_tasks)
+    work = load(store_path(), list)
     seen = {t["id"] for t in docs}
     out = docs + [t for t in work if t["id"] not in seen]
     try:                                   # 바로 저장해 둔다(다시 읽을 때 기본 업무 id가 바뀌지 않게)

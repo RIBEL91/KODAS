@@ -170,6 +170,9 @@ def month_choices(today: dt.date | None = None, current: str = "") -> list[str]:
 
 def default_book() -> str:
     """바탕화면의 '주택전산검색 관계철.xlsx'(있으면)."""
+    import paths
+    if paths.was_reset():                    # 데이터 초기화 뒤에는 빈 기록으로 시작
+        return ""
     p = os.path.join(os.path.expanduser("~"), "Desktop", DEFAULT_NAME)
     return p if os.path.exists(p) else ""
 

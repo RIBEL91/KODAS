@@ -142,6 +142,11 @@ def wipe(folder: str | None = None) -> list[str]:
                 os.remove(p)
         except OSError:
             left.append(name)
+    try:                                     # 초기화 표시: 다시 켤 때 예전 기록을 끌어오지 않게
+        with open(os.path.join(folder, paths.RESET_MARK), "w", encoding="utf-8") as f:
+            f.write("KODAS [데이터 초기화]로 비운 폴더입니다. 바탕화면 관계철 엑셀 등에서 기록을 다시 가져오지 않습니다.\n")
+    except OSError:
+        pass
     return left
 
 

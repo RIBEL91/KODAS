@@ -56,7 +56,23 @@ def test_wipe_removes_everything_but_keeps_folder(tmp_path):
     (tmp_path / "백업").mkdir()
     (tmp_path / "백업" / "old.zip").write_bytes(b"z")
     assert data_backup.wipe(str(tmp_path)) == []
-    assert tmp_path.exists() and list(tmp_path.iterdir()) == []
+    assert tmp_path.exists() and [x.name for x in tmp_path.iterdir()] == ["초기화함.txt"]   # 초기화 표시만
+
+
+def test_after_reset_nothing_comes_back(tmp_path, monkeypatch):
+    """초기화 뒤: 바탕화면 관계철에서 자격검증 기록을 다시 가져오지 않고, 일정표는 기록 없이 하나만."""
+    import data_backup
+    import paths
+    import verify_log as vl
+    import work_schedule as ws
+    monkeypatch.setattr(paths, "user_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(paths, "data_dir", lambda: str(tmp_path))
+    assert not paths.was_reset()
+    data_backup.wipe(str(tmp_path))
+    assert paths.was_reset()
+    assert vl.default_book() == ""
+    assert ws.load_boards() == []
+    assert ws.load(ws.merged_path(), ws.merged_defaults) == []
 
 
 def test_auto_backup_monthly_and_keeps_recent(tmp_path, monkeypatch):

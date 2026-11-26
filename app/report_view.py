@@ -60,7 +60,7 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(f, text=intro, foreground=ui_kit.SUB, wraplength=int(580 * self.k),
                   justify="left").pack(anchor="w", pady=(2, 12))
 
-        box = ttk.LabelFrame(f, text=" 기본 정보 ", padding=(12, 8))
+        box = self.tut_info = ttk.LabelFrame(f, text=" 기본 정보 ", padding=(12, 8))
         box.pack(fill="x")
         box.columnconfigure(1, weight=1)
         ttk.Label(box, text="초안 넣기", font=(F, 10, "bold")).grid(row=0, column=0, sticky="w", pady=3)
@@ -113,7 +113,7 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(box, text="잠긴 첨부(PDF·엑셀·한글)를 열 때 1→2→3 차례로 넣어 봅니다. 없으면 비워 두세요.",
                   foreground=ui_kit.SUB).grid(row=5, column=1, columnspan=2, sticky="w", padx=8)
 
-        vb = ttk.LabelFrame(f, text=" 작성할 권 ", padding=(12, 8))
+        vb = self.tut_vols = ttk.LabelFrame(f, text=" 작성할 권 ", padding=(12, 8))
         vb.pack(fill="x", pady=(12, 0))
         self.vol_info = {}
         for r, (v, name) in enumerate(qe.VOLUMES.items()):
@@ -126,6 +126,7 @@ class ReportDialog(tk.Toplevel):
         row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.step = tk.StringVar(value=ALL_NOS)        # 한 번호씩 만들고 검토한 뒤 다음 번호로
         self.step_cb = ttk.Combobox(row, textvariable=self.step, state="readonly", width=12, values=[ALL_NOS])
+        self.tut_row = row
         if self.folder_mode:
             ttk.Label(row, text="번호").pack(side="left")
             self.step_cb.pack(side="left", padx=(4, 8))
@@ -136,7 +137,7 @@ class ReportDialog(tk.Toplevel):
         self.root_lbl = ttk.Label(vb, foreground=ui_kit.SUB, wraplength=int(540 * self.k), justify="left")
         self.root_lbl.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         if not self.folder_mode:                       # 직접 만들어 둔 폴더링으로 사진 넣기
-            mine = ttk.Frame(vb)
+            mine = self.tut_mine = ttk.Frame(vb)
             mine.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
             ttk.Button(mine, text="📂 내가 만든 폴더링 적용하기…", command=self._pick_custom).pack(side="left")
             self.custom_off = ttk.Button(mine, text="해제 (KODAS 폴더링 쓰기)", command=self._clear_custom)
@@ -149,7 +150,7 @@ class ReportDialog(tk.Toplevel):
                               highlightbackground="#e0e0e0", font=(F, 9))
         self.status.pack(fill="both", expand=True, pady=(12, 8))
         self.status.configure(state="disabled")
-        bot = ttk.Frame(f)
+        bot = self.tut_bot = ttk.Frame(f)
         bot.pack(fill="x")
         self.pb = ttk.Progressbar(bot, mode="indeterminate", length=int(160 * self.k))
         ttk.Button(bot, text="닫기", command=self._close).pack(side="right")

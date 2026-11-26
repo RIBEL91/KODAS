@@ -86,11 +86,11 @@ def test_merged_board_combines_mydocs_and_schedule(tmp_path, monkeypatch):
     assert (tmp_path / "업무일정.json").exists() and (tmp_path / "나의공문.json").exists()
 
 
-def test_merged_board_first_time_uses_default_tasks(tmp_path, monkeypatch):
+def test_merged_board_first_time_is_empty(tmp_path, monkeypatch):
+    """처음(또는 초기화 뒤)에는 기록 없이 빈 목록 — 기능만 보인다."""
     monkeypatch.setattr(ws.paths, "data_dir", lambda: str(tmp_path))
-    tasks = ws.load(ws.merged_path(), ws.merged_defaults)
-    assert len(tasks) == len(ws.default_tasks())
-    assert ws.load(ws.merged_path(), ws.merged_defaults)[0]["id"] == tasks[0]["id"]
+    assert ws.load(ws.merged_path(), ws.merged_defaults) == []
+    assert ws.load_boards() == []
 
 
 def test_parse_due_and_urgency():

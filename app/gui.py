@@ -524,9 +524,19 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     # ================= 튜토리얼 =================
-    def _tutorial(self):
-        """처음 시작 튜토리얼: 기능마다 화면을 직접 열고 설명할 자리를 차례로 강조한다.
-        단지기본정보 작성 → 이달 작성해야 할 문서 → 나의 공문 작성 → 임대담당자 자격검증 기록하기 → 공문 작성."""
+    TUTORIAL_PARTS = (     # [사용 방법] 기능별 튜토리얼 카드: (기능 = 튜토리얼 part, 카드 설명)
+        ("단지기본정보 작성", "홈넷 계정·관리소·단지 정보\n처음 한 번 넣기"),
+        ("이달 작성해야 할 문서", "업무 추가·기한 넣기,\n남은 날짜별 글자 색"),
+        ("나의 공문 작성", "내 업무 공문 넣기·달 바꾸기,\n체크·바로 작성"),
+        ("임대담당자 자격검증 기록하기", "탭별 기록표·행 추가,\n엑셀로 받기·올려 적용"),
+        ("공문 작성", "서식 고르기 → 빈칸 넣기\n→ 홈넷에 자동 작성"),
+        ("품질평가서 작성", "① 초안 → ② 폴더링\n→ ③ 한글파일 (테스트중)"),
+    )
+
+    def _tutorial(self, part: str = ""):
+        """튜토리얼: 기능마다 화면을 직접 열고 설명할 자리를 차례로 강조한다.
+        part가 없으면(처음 시작) 단지기본정보 작성 → 이달 작성해야 할 문서 → 나의 공문 작성 →
+        임대담당자 자격검증 기록하기 → 공문 작성 차례로 모두. part가 있으면([사용 방법]에서 고른 기능) 그 기능만."""
         import tutorial
         from tutorial import canvas_box, widget_box
         if getattr(self, "tutorial_on", None):
@@ -595,8 +605,63 @@ class App:
             if i is not None:
                 self._pick_template(i)
 
-        A, B, C, D, E = ("단지기본정보 작성", "이달 작성해야 할 문서", "나의 공문 작성",
-                         "임대담당자 자격검증 기록하기", "공문 작성")
+        A, B, C, D, E, Q = (p for p, _sub in self.TUTORIAL_PARTS)
+
+        # ---- 품질평가 튜토리얼: 메뉴·창을 튜토리얼이 직접 열고(tut_made 표시) 끝나면 닫는다 ----
+        qs = {"menu": None}
+
+        def q_menu_win():
+            d = qs["menu"]
+            return d if d is not None and d.winfo_exists() else None
+
+        def q_win():
+            w = getattr(self, "_quality_win", None)
+            return w if w is not None and w.winfo_exists() and getattr(w, "tut_made", False) else None
+
+        def q_close_win():
+            w = q_win()
+            if w is not None:
+                w.destroy()
+
+        def q_close_menu():
+            d = q_menu_win()
+            if d is not None:
+                d.destroy()
+            qs["menu"] = None
+
+        def q_close():
+            q_close_menu()
+            q_close_win()
+
+        def q_home():
+            q_close()
+            if not self.landing.winfo_ismapped():
+                self._go_home()
+
+        def q_menu():
+            q_close_win()
+            if q_menu_win() is None:
+                qs["menu"] = self._quality_menu(modal=False)
+
+        def q_open(kind):
+            q_close_menu()
+            w = q_win()
+            if w is not None and getattr(w, "tut_kind", "") == kind:
+                w.lift()
+                return
+            q_close_win()
+            import quality_view
+            import report_view
+            if kind == "eval":
+                w = quality_view.QualityDialog(self.root, self.cfg, self.k, self.log, homnet_run=self._quality_homnet,
+                                               on_report=lambda p: None, tour=True)
+            else:
+                w = report_view.ReportDialog(self.root, self.cfg, self.k, self.log, homnet_run=self._quality_homnet,
+                                             mode="folder" if kind == "folder" else "report",
+                                             on_next=(lambda p: None) if kind == "folder" else None)
+            w.tut_made, w.tut_kind = True, kind
+            self._quality_win = w
+            w.update_idletasks()
         steps = [
             dict(part=A, title="바로가기 [단지기본정보]",
                  text="여기를 누르면 단지기본정보 입력 화면이 열립니다.\n(왼쪽 아래 관리소 카드를 눌러도 열립니다)",
@@ -676,10 +741,111 @@ class App:
                  text="누르면 홈넷 표준기안문이 자동으로 작성됩니다(작업 중 창이 뜹니다).\n"
                       "결재올림(상신)은 하지 않으니 브라우저에서 확인한 뒤 직접 올려 주세요. 이제 시작해 볼까요?",
                  go=go_write, box=lambda: widget_box(self.auto_btn)),
+
+            # ---- 품질평가서 작성: 메뉴 → ① 초안 → ② 폴더링 → ③ 한글파일 창을 차례로 직접 열어 짚는다 ----
+            dict(part=Q, title="왼쪽 메뉴 [품질평가서 작성]",
+                 text="품질평가 보고서를 세 단계로 만듭니다. 여기를 누르면 시작합니다.\n"
+                      "(아직 테스트 중인 기능이라 결과물은 꼭 한 번 검토해 주세요)",
+                 go=q_home, box=lambda: canvas_box(self.sidebar, "quality")),
+            dict(part=Q, title="세 단계 고르기",
+                 text="① 초안 작성 → ② 폴더링 → ③ 한글파일 작성 순서로 진행합니다.\n"
+                      "각 창의 [다음 →] 버튼으로 다음 단계 창이 바로 열리고, 같은 초안이 이어서 들어갑니다.\n"
+                      "중간에 껐다가도 여기서 원하는 단계부터 다시 시작할 수 있습니다.",
+                 go=q_menu, over=q_menu_win, box=lambda: widget_box(q_menu_win().tut_cards)),
+
+            dict(part=Q, title="① 초안 — 작년도 초안 넣기",
+                 text="[파일 넣기…]로 작년에 제출한 평가표 엑셀(평가 근거가 적혀 있는 것)을 넣습니다.\n"
+                      "KODAS가 작년 근거에 적힌 문서 이름을 보고, 올해 같은 종류의 문서를 찾는 기준으로 씁니다.\n"
+                      "[열기]는 엑셀로 열어 보기, [삭제]는 칸에서만 빼기(파일은 그대로)입니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_prev)),
+            dict(part=Q, title="① 초안 — 최근 5개년도 작성분 (선택)",
+                 text="예전 몇 해 동안 손으로 적어 둔 평가표가 있으면 최대 5개까지 더 넣습니다.\n"
+                      "그 문서들에 적힌 근거도 함께 찾아 줘서 빠지는 문서가 줄어듭니다. 없으면 비워 두세요.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_extra)),
+            dict(part=Q, title="① 초안 — 올해 평가표 넣기",
+                 text="근거를 적어 넣을 올해 평가표 엑셀을 넣습니다. 빈 양식이어도 됩니다.\n"
+                      "넣으면 왼쪽 목록에 평가항목이 모두 나옵니다. 저장할 때 원본은 자동으로 백업됩니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_cur)),
+            dict(part=Q, title="① 초안 — [대장관리 참고해 초안 작성]",
+                 text="대장 연도(보통 올해)를 고르고 누르면, 홈넷 기록물등록대장에서 작년 근거와\n"
+                      "같은 종류의 올해 문서를 찾아 평가 근거 칸에 적습니다. (홈넷 로그인 필요)\n"
+                      "처음엔 대장 전체를 읽느라 몇 분 걸리고, 다음부터는 새로 등록된 문서만 더 읽습니다.\n"
+                      "오래 걸리면 [멈추기]로 멈출 수 있습니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_go)),
+            dict(part=Q, title="① 초안 — 항목 목록 보기",
+                 text="번호·평가항목·배점·점수·증빙 수·평가 근거가 한 줄씩 나옵니다.\n"
+                      "줄을 누르면 오른쪽 위에 그 항목 이름과 점검자 의견이 나옵니다.\n"
+                      "근거가 길면 Shift+마우스 휠로 오른쪽까지 봅니다. 줄 색의 뜻은 아래와 같습니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_list),
+                 legend=[("노란 바탕  —  초안 작성으로 근거를 채운 항목", "#c99700"),
+                         ("옅은 빨강 바탕  —  작년엔 있던 문서가 올해 없는 항목", "#e57373"),
+                         ("빨간 글씨  —  증빙 파일이 없는 항목", "#c0392b"),
+                         ("파란 글씨  —  [점수 자동 매기기]로 넣은 점수", "#1d4ed8")]),
+            dict(part=Q, title="① 초안 — 보기 줄",
+                 text="[보기]: 부문별로 골라 봅니다.  [내 항목 고르기…]: 내가 맡은 항목만 골라 두고 봅니다.\n"
+                      "[점수 자동 매기기]: 근거가 다 있는 항목은 만점, 모자라면 깎은 점수를 파란 글씨로 넣습니다.\n"
+                      "'증빙 없는 항목만'·'점수 안 넣은 항목만'을 켜면 아직 손볼 항목만 남습니다.\n"
+                      "오른쪽 끝 숫자는 지금까지 넣은 점수 합계입니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_bar)),
+            dict(part=Q, title="① 초안 — 저장하고 다음으로",
+                 text="[평가표에 저장]: 올해 평가표 엑셀에 점수·근거를 넣습니다.\n"
+                      "[완성본 엑셀로 저장…]: 제출용 사본을 '품질평가 작성' 폴더에 따로 만듭니다.\n"
+                      "[다음: 폴더링 →]: 이 창을 닫고 같은 초안으로 ② 폴더링 창을 엽니다.",
+                 go=lambda: q_open("eval"), over=q_win, box=lambda: widget_box(q_win().tut_bot)),
+
+            dict(part=Q, title="② 폴더링 — 기본 정보",
+                 text="초안(① 에서 저장한 평가표)은 자동으로 들어옵니다. 다른 파일이면 [넣기…]로 바꿉니다.\n"
+                      "첨부파일 비밀번호 1~3: 잠긴 PDF·엑셀·한글 첨부를 열 때 차례로 넣어 봅니다(이 PC에만 암호화 저장).\n"
+                      "WISE 단지코드(예: C00060): 해약처리현황 같은 WISE 화면을 캡처해 넣을 때 씁니다.",
+                 go=lambda: q_open("folder"), over=q_win, box=lambda: widget_box(q_win().tut_info)),
+            dict(part=Q, title="② 폴더링 — 권·번호 고르고 [폴더링 만들기]",
+                 text="만들 권(1~4권)을 체크하고 번호를 고른 뒤 [폴더링 만들기]를 누르면\n"
+                      "평가 근거에 적힌 문서를 홈넷 대장에서 받아 '품질평가 작성\\폴더링\\번호\\항목' 폴더에 그림으로 넣습니다.\n"
+                      "이름·동호수·연락처는 000으로 가리고, 못 받은 파일은 이유를 폴더에 적어 둡니다.\n"
+                      "한 번호씩 만들고 [폴더링 열기]로 검토한 뒤 다음 번호로 넘어가세요.",
+                 go=lambda: q_open("folder"), over=q_win, box=lambda: widget_box(q_win().tut_vols)),
+            dict(part=Q, title="② 폴더링 — 진행 상황과 다음",
+                 text="받는 동안 아래 칸에 진행 상황이 나오고, [멈추기]로 멈출 수 있습니다.\n"
+                      "다시 [폴더링 만들기]를 누르면 남은 것만 이어서 받습니다.\n"
+                      "다 됐으면 [다음: 한글파일 작성 →]으로 ③ 단계 창을 엽니다.",
+                 go=lambda: q_open("folder"), over=q_win, box=lambda: widget_box(q_win().tut_bot)),
+
+            dict(part=Q, title="③ 한글파일 — 기본 정보",
+                 text="평가년도, 센터(단지) 이름, 관리소장 성명을 확인합니다.\n"
+                      "센터 이름은 표지의 '○○ 주거행복지원센터'에, 소장 성명은 서약서에 들어갑니다.",
+                 go=lambda: q_open("report"), over=q_win, box=lambda: widget_box(q_win().tut_info)),
+            dict(part=Q, title="③ 한글파일 — 작성할 권",
+                 text="만들 권을 체크합니다. 권마다 항목 수·점수 수·증빙 파일 수가 옆에 나옵니다.\n"
+                      "[폴더링 열기]로 사진이 될 파일을 미리 볼 수 있고, 폴더를 고쳤으면 [새로 보기]를 누릅니다.",
+                 go=lambda: q_open("report"), over=q_win, box=lambda: widget_box(q_win().tut_vols)),
+            dict(part=Q, title="③ 한글파일 — 내가 만든 폴더링 적용하기",
+                 text="② 대신 직접 폴더링해 둔 폴더가 있으면 [📂 내가 만든 폴더링 적용하기…]로 고릅니다.\n"
+                      "폴더 이름이 번호(1-1, 4권 1-1 …)로 시작하면 그 번호, 그 안의 '1. …' '2. …' 폴더가 항목입니다.\n"
+                      "예) 4권 임대운영 \\ 1-1 \\ 1. 임대차계약 \\ (파일들)\n"
+                      "못 찾은 항목은 아래 칸에 알려 주고, [해제]를 누르면 KODAS 폴더링으로 돌아갑니다.",
+                 go=lambda: q_open("report"), over=q_win, box=lambda: widget_box(q_win().tut_mine)),
+            dict(part=Q, title="③ 한글파일 — [한글파일 작성]",
+                 text="누르면 한글이 뒤에서 1~4권 양식을 열어 점수와 증빙 사진을 넣습니다(권마다 1~3분).\n"
+                      "보고서는 초안 옆 '품질평가 작성' 폴더에 저장되고, 다 되면 열어 볼지 묻습니다.\n"
+                      "단지개요(위치·면적·준공일 등)는 양식 예시 그대로라 한글에서 직접 고쳐 주세요.",
+                 go=lambda: q_open("report"), over=q_win, box=lambda: widget_box(q_win().tut_bot)),
         ]
+        if part == Q:                              # 사용자가 열어 둔 품질평가 창(작업 중일 수 있음)은 건드리지 않는다
+            win = getattr(self, "_quality_win", None)
+            if win is not None and win.winfo_exists() and not getattr(win, "tut_made", False):
+                messagebox.showinfo("사용 방법", "열려 있는 품질평가서 작성 창을 저장하고 닫은 뒤 다시 눌러 주세요.\n"
+                                    "(튜토리얼이 그 창들을 직접 열어 보여 드립니다)", parent=self.root)
+                return
+        if part:                                   # [사용 방법]에서 고른 기능만
+            steps = [s for s in steps if s["part"] == part]
+        else:                                      # 처음 시작 튜토리얼은 다섯 기능(품질평가는 테스트 중이라 뺀다)
+            steps = [s for s in steps if s["part"] != Q]
+        if not steps:
+            return
 
         def closed():
             close_verify()
+            q_close()
             self.tutorial_on = None
             self._go_home()
         self.tutorial_on = tutorial.Tutorial(self.root, steps, on_close=closed)
@@ -2675,15 +2841,16 @@ class App:
             self.log(f"⚠️ 작성 이력 저장 실패: {ex}")
 
     # ================= 대장 문서 모으기 =================
-    def _quality_menu(self):
+    def _quality_menu(self, modal: bool = True):
         """[품질평가서 작성]: ① 초안 작성 / ② 폴더링 / ③ 한글파일 작성 중 고른다
-        (2026-11-26: 따로 만든 '품질평가서 작성기'의 기능을 KODAS로 합침 — 같은 창·같은 순서)."""
+        (2026-11-26: 따로 만든 '품질평가서 작성기'의 기능을 KODAS로 합침 — 같은 창·같은 순서).
+        modal=False: 튜토리얼이 열 때(튜토리얼 버튼을 누를 수 있게)."""
         self._import_quality_app()
-        self._choice_menu("품질평가서 작성", (
+        return self._choice_menu("품질평가서 작성", (
             ("① 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안", self._quality_eval),
             ("② 폴더링", "번호별 증빙을 대장에서 받아\n항목 폴더에 그림으로", self._quality_folder),
             ("③ 한글파일 작성", "1~4권 보고서에\n점수·증빙 사진 넣기", self._quality_report)),
-            arrows=True, badge="테스트중")
+            arrows=True, badge="테스트중", modal=modal)
 
     QUALITY_APP_KEYS = ("quality_xlsx", "quality_prev_xlsx", "quality_ledger_year", "quality_extra_xlsx_list",
                         "quality_my_items", "file_pws", "quality_chief", "wise_complex", "wise_basic_complexes")
@@ -2693,6 +2860,9 @@ class App:
         (평가표 경로·첨부 비밀번호·소장명·WISE 단지코드 등)과 대장 목록 캐시를 KODAS로 가져온다.
         홈넷 계정·단지 정보는 KODAS 것을 그대로 쓴다. 원본은 지우지 않는다."""
         if self.cfg.get("quality_app_imported"):
+            return
+        if paths.was_reset():                  # 데이터 초기화 뒤에는 예전 앱 기록을 다시 끌어오지 않는다
+            self.cfg["quality_app_imported"] = True
             return
         self.cfg["quality_app_imported"] = True
         src = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "품질평가서작성")
@@ -2811,9 +2981,11 @@ class App:
         dlg.grab_set()
         pw.focus_set()
 
-    def _choice_menu(self, title: str, cards, arrows: bool = False, badge: str = ""):
+    def _choice_menu(self, title: str, cards, arrows: bool = False, badge: str = "", cols: int = 0,
+                     subtitle: str = "", buttons=(), modal: bool = True):
         """둥근 카드 몇 개 중 하나를 고르는 작은 창. cards = ((제목, 설명, 할 일 또는 None=준비 중), …).
-        arrows=True면 카드 사이에 순서 화살표(→), badge가 있으면 제목 옆에 둥근 표시(예: 테스트중)."""
+        arrows=True면 카드 사이에 순서 화살표(→), badge가 있으면 제목 옆에 둥근 표시(예: 테스트중).
+        cols>0이면 한 줄에 cols개씩 줄을 바꾼다. buttons = ((글자, 할 일), …): 아래 [닫기] 옆 버튼."""
         import tkinter.font as tkfont
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
@@ -2838,10 +3010,11 @@ class App:
             cv.create_image(0, 0, anchor="nw", image=img)
             cv.create_text(bw / 2, bh / 2, text=badge, font=bf, fill=ui_kit.TINTS["amber"][1])
             cv.img = img
-        tk.Label(dlg, text="무엇을 할지 골라 주세요." + ("  (왼쪽부터 순서대로 진행합니다)" if arrows else ""),
+        tk.Label(dlg, text=subtitle or ("무엇을 할지 골라 주세요." + ("  (왼쪽부터 순서대로 진행합니다)" if arrows else "")),
                  fg="#666", bg=bg).pack(anchor="w", pady=(2, 14))
-        row = tk.Frame(dlg, bg=bg)
-        row.pack()
+        grid_f = tk.Frame(dlg, bg=bg)
+        grid_f.pack()
+        row = None
 
         # 카드 크기: 가장 긴 글자에 맞춰 모두 같게
         f_t = tkfont.Font(family=F, size=13, weight="bold")
@@ -2895,15 +3068,25 @@ class App:
             cv.bind("<Leave>", lambda _e: cv.itemconfigure(pic, image=imgs[0]))
 
         for n, (c_title, c_sub, c_cmd) in enumerate(cards):
-            if arrows and n:
+            if row is None or (cols and n % cols == 0):
+                row = tk.Frame(grid_f, bg=bg)
+                row.pack(anchor="w")
+            elif arrows:
                 arrow()
             card(c_title, c_sub, c_cmd)
-        ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(anchor="e", pady=(16, 0))
+        bot = tk.Frame(dlg, bg=bg)
+        bot.pack(fill="x", pady=(16, 0))
+        ttk.Button(bot, text="닫기", command=dlg.destroy).pack(side="right")
+        for b_text, b_cmd in reversed(buttons):
+            ttk.Button(bot, text=b_text, command=lambda c=b_cmd: (dlg.destroy(), c())).pack(side="right", padx=(0, 6))
         dlg.update_idletasks()
         x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dlg.winfo_reqwidth()) // 2)
         y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - dlg.winfo_reqheight()) // 3)
         dlg.geometry(f"+{x}+{y}")
-        dlg.grab_set()
+        dlg.tut_cards = grid_f                     # 튜토리얼이 강조할 카드 줄
+        if modal:
+            dlg.grab_set()
+        return dlg
 
     def _verify_log(self):
         """바로가기 [자격검증 기록]: 주민등록 검증결과(갱신·주택정기·명의변경) 기록(KODAS 안에 따로 저장)."""
@@ -3378,7 +3561,7 @@ class App:
             "[➕ 공문 넣기]로 내 업무 공문만 골라 구분(일반·매월·분기별·정해진 달)을 정해 넣습니다. 업로드한 PDF 공문은 맨 위에 있습니다.",
             "◀ ▶ 와 [이번 달]로 달을 바꾸며 그 달에 쓴 공문을 체크합니다. '끝낸 공문 숨기기'를 켜면 체크한 공문은 숨습니다.",
             "[✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다. ✕는 목록에서만 뺍니다(서식은 그대로).",
-            "[➕ 일정표 추가]로 나만의 일정표 탭을 여러 개 만들 수 있습니다(처음엔 '나의 업무 일정표' 하나). "
+            "[➕ 일정표 추가]로 나만의 일정표 탭을 여러 개 만들 수 있습니다(처음엔 '나의 공문·업무 일정표' 하나만). "
             "임대업무 일정표와 같은 방식으로 할 일을 넣고 체크하며, [✎ 이름 바꾸기]·[✕ 일정표 지우기]로 고칩니다.")),
         ("나의 공문 업로드 (PDF → 서식)", (
             "바로가기 [나의 공문 업로드](또는 파일 메뉴)를 누르고 공문 PDF를 고릅니다(여러 개 가능).",
@@ -3393,7 +3576,8 @@ class App:
             "기록한 차수·요청일·요청건수는 갱신계약·주택소유 정기검색 공문을 쓸 때 자동으로 들어갑니다.",
             "할 일 체크(임대업무 일정표)는 왼쪽 메뉴 [나의 공문 작성]의 '나의 공문·업무 일정표'에서 합니다.")),
         ("품질평가서 작성", (
-            "바로가기 [품질평가서 작성] → [품질평가 초안 작성]을 누릅니다([한글파일 작성]은 준비 중).",
+            "왼쪽 메뉴 [품질평가서 작성]을 누르고 ① 초안 작성 → ② 폴더링 → ③ 한글파일 작성 차례로 진행합니다(테스트 중).",
+            "③ 한글파일 작성에서 직접 폴더링해 둔 폴더가 있으면 [📂 내가 만든 폴더링 적용하기…]로 골라 그 사진을 넣습니다.",
             "[작년도 초안]에 작년 평가표, [품질평가 초안 작성]에 올해 평가표(빈 양식도 됨)를 [파일 넣기…]로 넣습니다.",
             "대장 연도를 고르고 [대장관리 참고해 초안 작성]을 누르면 작년 근거와 같은 종류의 올해 문서를 홈넷 대장에서 찾아 "
             "평가 근거에 적습니다. 처음에는 몇 분 걸리고, 다음부터는 새로 등록된 문서만 더 읽습니다.",
@@ -3409,7 +3593,19 @@ class App:
     )
 
     def _show_help(self):
-        """[사용 방법]: 기능별 사용법을 스크롤 창으로 보여 준다(공문별 [ⓘ 도움말] 창과 같은 모양)."""
+        """[사용 방법]: 기능 카드 중 하나를 누르면 그 기능의 튜토리얼(화면을 직접 열고 강조)을 보여 준다.
+        아래 버튼: [처음부터 전체 보기](처음 시작 튜토리얼) · [글로 된 사용 방법](예전 스크롤 창)."""
+        if getattr(self, "tutorial_on", None):
+            return
+        cards = [(f"{n}. {p}", sub, lambda p=p: self.root.after(50, lambda: self._tutorial(p)))
+                 for n, (p, sub) in enumerate(self.TUTORIAL_PARTS, 1)]
+        self._choice_menu("사용 방법", cards, cols=3,
+                          subtitle="궁금한 기능을 누르면 그 화면을 직접 열어 차례로 짚어 드립니다.",
+                          buttons=(("▶ 처음부터 전체 보기", lambda: self.root.after(50, self._tutorial)),
+                                   ("📄 글로 된 사용 방법", self._show_help_text)))
+
+    def _show_help_text(self):
+        """[글로 된 사용 방법]: 기능별 사용법을 스크롤 창으로 보여 준다(공문별 [ⓘ 도움말] 창과 같은 모양)."""
         old = getattr(self, "usage_win", None)
         if old is not None and old.winfo_exists():
             old.deiconify()

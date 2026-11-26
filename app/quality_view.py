@@ -222,7 +222,8 @@ class SheetPicker(tk.Toplevel):
 
 
 class QualityDialog(tk.Toplevel):
-    def __init__(self, master, cfg: dict, k: float = 1.0, log=None, homnet_run=None, on_report=None):
+    def __init__(self, master, cfg: dict, k: float = 1.0, log=None, homnet_run=None, on_report=None,
+                 tour: bool = False):
         """homnet_run(job, on_ok, on_err): 홈넷에 로그인한 뒤 job(driver, log)를 작업 스레드에서 돌린다.
         on_report(path): [한글파일 만들기] — 이 창을 닫고 한글파일 작성 창을 그 초안으로 연다."""
         super().__init__(master)
@@ -246,7 +247,8 @@ class QualityDialog(tk.Toplevel):
         self.only_blank = tk.BooleanVar(value=False)
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._close)
-        self.after(50, self._open_first)
+        if not tour:                     # 튜토리얼로 열 때는 평가표를 묻지 않는다(빈 창으로 설명만)
+            self.after(50, self._open_first)
 
     # ---------------- 화면 ----------------
     def _build(self):
@@ -371,6 +373,9 @@ class QualityDialog(tk.Toplevel):
                                      "고른 연도에서 찾아 초안 작성 파일에 기록합니다. (홈넷 로그인 필요, 대장을 처음 읽을 때 몇 분 걸립니다)")
         self.status.pack(anchor="w", fill="x", pady=(6, 0))
         self._show_slots()
+        # 튜토리얼이 강조할 자리
+        self.tut_bar, self.tut_list, self.tut_extra, self.tut_go = bar, left, ebox, gf
+        self.tut_prev, self.tut_cur = self.prev_lbl.master, self.cur_lbl.master
 
         bot = ttk.Frame(self, padding=(14, 10))
         bot.pack(fill="x")
@@ -386,6 +391,7 @@ class QualityDialog(tk.Toplevel):
         ttk.Label(bot, foreground=ui_kit.SUB, wraplength=int(420 * self.k), justify="left",
                   text="점수를 고치거나 초안을 만든 뒤 [평가표에 저장]을 누르면 엑셀에 들어갑니다. 저장 전 원본은 자동 백업."
                   ).pack(side="left", fill="x", expand=True)
+        self.tut_bot = bot
         self.bind("<Activate>", lambda e: self._rescan() if e.widget is self else None)   # 탐색기에서 넣고 돌아오면
 
     def _scroll_area(self, parent):

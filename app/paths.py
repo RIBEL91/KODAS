@@ -57,6 +57,14 @@ def _writable(folder: str) -> bool:
         return False
 
 
+RESET_MARK = "초기화함.txt"     # [데이터 초기화] 뒤 표시: 바탕화면 관계철·예전 품질평가 앱 기록을 다시 가져오지 않는다
+
+
+def was_reset() -> bool:
+    """[데이터 초기화]로 비운 기록 폴더인지(이때는 어디서도 예전 기록을 다시 끌어오지 않는다)."""
+    return os.path.exists(os.path.join(user_dir(), RESET_MARK))
+
+
 MOVED_MARK = "KODAS데이터로_옮김.txt"     # 예전 폴더에 남기는 '이미 옮김' 표시
 
 
