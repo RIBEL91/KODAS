@@ -113,7 +113,13 @@ def test_bundled_templates_all_render():
     assert len([t for t in items if t.file_name[:2].isdigit()]) == 29    # 임대 서식(오영철, 36번 중복입주 결과 보고·35번 예비입주자 모집 공고·34번 갱신계약 완료 보고·33번 국민임대 계약체결 안내 포함)
     assert len([t for t in items if t.file_name.startswith(("월별", "주별"))]) == 64   # 관리업무 서식(ai3)
     import complex_info
-    dtpl.set_complex(complex_info.resolve({}))
+    sample = {"관리소명": "광주우산3관리소", "단지명": "광주우산3", "단지약칭": "우산3", "공급유형": "영구임대",
+              "주거행복지원센터": "광주우산3 주거행복지원센터", "주거복지상담실": "광주우산3주거복지상담실",
+              "계좌번호": "농협 000-00-000000 주택관리공단㈜ 광주우산3", "사업자등록번호": "000-00-00000",
+              "경비용역업체": "가경비(주)", "청소용역업체": "(주)나청소", "승강기유지업체": "다승강기",
+              "평형1": "39.85", "평형1세대수": "588", "평형2": "39.87", "평형2세대수": "149",
+              "평형3": "43.92", "평형3세대수": "239", "평형4": "45.26", "평형4세대수": "298"}
+    dtpl.set_complex(complex_info.resolve(sample))      # 처음 값은 빈칸이므로 시험용 단지 값을 넣는다
     items += dtpl.load_all(os.path.join(paths.template_dir(), dtpl.FIRST_DIR))[0]
     items += dtpl.load_all(os.path.join(paths.template_dir(), dtpl.OPTION_DIR))[0]
     for t in items:

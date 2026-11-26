@@ -67,7 +67,7 @@ class OneTouchDialog(tk.Toplevel):
 
         def row(parent, r, label, value, secret=False, hint=""):
             ttk.Label(parent, text=label).grid(row=r, column=0, sticky="e", padx=8, pady=3)
-            e = ttk.Entry(parent, width=30, show="●" if secret else "")
+            e = ui_kit.PeekEntry(parent, width=30) if secret else ttk.Entry(parent, width=30)
             e.insert(0, value)
             e.grid(row=r, column=1, sticky="w", padx=4, pady=3)
             if hint:
@@ -86,9 +86,9 @@ class OneTouchDialog(tk.Toplevel):
         acc = ttk.LabelFrame(self.body, text="계정 (홈넷 로그인에 씁니다)")
         acc.pack(fill="x", pady=(10, 4))
         self.v["homnet_id"] = row(acc, 0, "홈넷 아이디(사번)", a.homnet_id.get())
-        self.v["homnet_pw"] = row(acc, 1, "홈넷 비밀번호", a.homnet_pw.get(), secret=True)
-        self.v["vpn_id"] = row(acc, 2, "VPN 아이디", a.vpn_id.get(), hint="사무실(사내망)에서는 비워도 됩니다")
-        self.v["vpn_pw"] = row(acc, 3, "VPN 비밀번호", a.vpn_pw.get(), secret=True)
+        self.v["homnet_pw"] = row(acc, 1, "홈넷 비밀번호", a.homnet_pw.get(), secret=True)   # 칠 때 한 글자씩 보임
+        ttk.Label(acc, foreground="#c62828", text="※ 홈넷에 먼저 로그인한 뒤 작성해 주세요. (사무실 밖에서는 VPN 접속 → 홈넷 로그인)"
+                  ).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 2))
         self.remember = tk.BooleanVar(value=a.remember.get())
         ttk.Checkbutton(acc, text="이 PC에 계정 기억하기 (암호화 저장)",
                         variable=self.remember).grid(row=4, column=1, sticky="w", padx=4, pady=(3, 6))
@@ -114,7 +114,7 @@ class OneTouchDialog(tk.Toplevel):
             e = a.info_entries[key]
             e.delete(0, "end")
             e.insert(0, s[key])
-        for key in ("homnet_id", "homnet_pw", "vpn_id", "vpn_pw"):
+        for key in ("homnet_id", "homnet_pw"):
             e = getattr(a, key)
             e.delete(0, "end")
             e.insert(0, s[key])

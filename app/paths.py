@@ -4,7 +4,9 @@ exe(PyInstaller onefile, 영철ai/KODAS/KODAS.exe)는 자기 옆 'KODAS 데이�
 (2026-11-20: 인사이동 때 KODAS 폴더만 압축해 가져가면 서식·설정·일정·기록이 그대로 따라가게).
 - 설정·서식·작업 기록·미리보기·받은 대장 문서·일정표·나의 공문: KODAS.exe 옆 'KODAS 데이터'
   (그 폴더에 쓸 수 없으면 예전처럼 %APPDATA%/공문작성기)
-- 예전 버전이 %APPDATA%/공문작성기에 둔 기록은 처음 한 번 'KODAS 데이터'로 복사한다(원본은 그대로 둔다)
+- 예전 버전이 %APPDATA%/공문작성기에 둔 기록은 처음 한 번 'KODAS 데이터'로 복사한다(원본은 그대로 둔다).
+  복사했으면 예전 폴더에 표시(MOVED_MARK)를 남겨 다시는 복사하지 않는다 — 'KODAS 데이터'를 지우면
+  기록이 되살아나지 않고 처음 쓰는 화면(빈 설정·튜토리얼)으로 시작한다(2026-11-26 요청)
 - 홈넷·VPN 계정은 PC마다 다른 키로 암호화돼 있어 다른 PC에서는 다시 넣어야 한다(settings_store)
 - 기본 서식은 exe 안에 들어 있고, 실행할 때 사용자 서식 폴더로 맞춰 꺼낸다(sync_templates)
 소스로 실행할 때는 저장소 폴더(서식, logs, output, 수집)를 그대로 쓴다.
@@ -55,9 +57,25 @@ def _writable(folder: str) -> bool:
         return False
 
 
+MOVED_MARK = "KODAS데이터로_옮김.txt"     # 예전 폴더에 남기는 '이미 옮김' 표시
+
+
+def _mark_moved(old: str, new: str) -> None:
+    try:
+        with open(os.path.join(old, MOVED_MARK), "w", encoding="utf-8") as f:
+            f.write(f"이 폴더의 기록은 KODAS 데이터로 옮겼습니다: {new}\n"
+                    "KODAS는 이 폴더를 다시 읽지 않습니다(KODAS 데이터를 지우면 처음 상태로 시작).\n")
+    except OSError:
+        pass
+
+
 def migrate(old: str, new: str) -> bool:
-    """예전 기록 폴더(old)를 새 폴더(new)로 한 번 복사한다. new에 이미 설정이 있으면 하지 않는다."""
-    if not os.path.isdir(old) or os.path.exists(os.path.join(new, "settings.json")):
+    """예전 기록 폴더(old)를 새 폴더(new)로 딱 한 번 복사한다.
+    new에 이미 설정이 있거나, 예전에 이미 옮겼으면(old에 MOVED_MARK) 하지 않는다."""
+    if not os.path.isdir(old) or os.path.exists(os.path.join(old, MOVED_MARK)):
+        return False
+    if os.path.exists(os.path.join(new, "settings.json")):
+        _mark_moved(old, new)          # 이 표시가 생기기 전에 옮긴 PC: 이미 옮겼다고 적어 둔다
         return False
     os.makedirs(new, exist_ok=True)
     for name in os.listdir(old):
@@ -81,6 +99,7 @@ def migrate(old: str, new: str) -> bool:
             f.write(text)
     except OSError:
         pass
+    _mark_moved(old, new)
     return True
 
 

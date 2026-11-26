@@ -27,7 +27,7 @@ def ensure_tunnel(log, vpn_id: str = "", vpn_pw: str = "") -> None:
         log("✅ 사내망(VPN)이 이미 연결되어 있습니다.")
         return
     if not (vpn_id and vpn_pw):
-        raise SessionError("VPN이 연결되어 있지 않습니다. ① 계정에서 VPN 아이디와 비밀번호를 입력하세요.")
+        raise SessionError("사내망(VPN)에 연결되어 있지 않습니다. VPN에 접속하고 홈넷에 로그인한 뒤 다시 작성해 주세요.")
 
     from vpn_service import KOHOM_VPN, LoginService
     log(f"VPN 접속을 시도합니다... ({reason})")

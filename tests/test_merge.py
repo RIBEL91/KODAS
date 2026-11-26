@@ -31,6 +31,7 @@ def test_amount_number_calc_complex():
     body = dtpl.fill(t.body, {"입력:수량": "10", "입력:단가": "3200", "입력:총액": "113560"}, {})
     assert "| 10 | 3,200 | 32,000 |" in body
     assert "금113,560원(금일십일만삼천오백육십원)" in body
+    dtpl.set_complex({"단지명": "광주우산3"})
     assert dtpl.fill(t.title, {}, {}) == "광주우산3 구입"
     assert not dtpl.leftovers(body)          # 32,000의 000은 빈칸 표시가 아니다
 

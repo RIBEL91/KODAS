@@ -70,3 +70,57 @@ def test_history_last_month_only(tmp_path):
     (tmp_path / "작성이력_x.csv").write_text(f"시각,서식\n{old},옛것\n{new},새것\n", encoding="utf-8-sig")
     assert [r["서식"] for r in ui_kit.read_history(str(tmp_path))] == ["새것"]
     assert len(ui_kit.read_history(str(tmp_path), days=None)) == 2
+
+
+def test_merged_board_combines_mydocs_and_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws.paths, "data_dir", lambda: str(tmp_path))
+    doc = ws.new_task("갱신계약 안내", "매월")
+    doc["tpl"] = "임대/갱신.hwpx"
+    ws.save([doc], ws.mydocs_path())
+    work = ws.new_task("중복입주", "분기별")
+    ws.save([work], ws.store_path())
+    tasks = ws.load(ws.merged_path(), ws.merged_defaults)
+    assert [t["title"] for t in tasks] == ["갱신계약 안내", "중복입주"]
+    assert tasks[0]["tpl"] == "임대/갱신.hwpx"
+    assert (tmp_path / "나의공문일정.json").exists()
+    assert (tmp_path / "업무일정.json").exists() and (tmp_path / "나의공문.json").exists()
+
+
+def test_merged_board_first_time_uses_default_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws.paths, "data_dir", lambda: str(tmp_path))
+    tasks = ws.load(ws.merged_path(), ws.merged_defaults)
+    assert len(tasks) == len(ws.default_tasks())
+    assert ws.load(ws.merged_path(), ws.merged_defaults)[0]["id"] == tasks[0]["id"]
+
+
+def test_parse_due_and_urgency():
+    import datetime as dt
+    today = dt.date(2026, 11, 26)
+    assert ws.parse_due("12-5", "일반", today) == "2026-12-05"
+    assert ws.parse_due("2027.1.3", "일반", today) == "2027-01-03"
+    assert ws.parse_due("말일", "매월") == 0 and ws.parse_due("15일", "분기별") == 15
+    assert ws.parse_due("", "매월") is None
+    import pytest
+    with pytest.raises(ValueError):
+        ws.parse_due("40", "매월")
+    assert ws.urgency(dt.date(2026, 11, 25), today) == ws.DUE_OVER
+    assert ws.urgency(dt.date(2026, 11, 29), today) == ws.DUE_NEAR
+    assert ws.urgency(dt.date(2026, 12, 3), today) == ws.DUE_SOON
+    assert ws.urgency(dt.date(2026, 12, 10), today) is None
+
+
+def test_month_due_lists_unfinished_tasks_with_due(tmp_path, monkeypatch):
+    import datetime as dt
+    monkeypatch.setattr(ws.paths, "data_dir", lambda: str(tmp_path))
+    today = dt.date(2026, 2, 10)
+    a = ws.new_task("{월} 정기검색", "매월"); a["due"] = 0          # 말일 → 2월 28일
+    b = ws.new_task("통합정례화", "정해진 달", [3]); b["due"] = 5     # 2월엔 할 일 아님
+    c = ws.new_task("한 번 할 일", "일반"); c["due"] = "2026-02-01"   # 지남
+    d = ws.new_task("끝낸 일", "매월"); d["due"] = 3
+    ws.set_done(d, "2026-02", True)
+    e = ws.new_task("기한 없음", "매월")
+    ws.save([a, b, c, d, e], ws.merged_path())
+    got = ws.month_due(today)
+    assert [(x["title"], x["date"]) for x in got] == [("한 번 할 일", dt.date(2026, 2, 1)),
+                                                       ("2월 정기검색", dt.date(2026, 2, 28))]
+    assert got[0]["urgency"] == ws.DUE_OVER and got[1]["urgency"] is None

@@ -35,3 +35,28 @@ def test_migrate_copies_old_data_once(tmp_path):
     got = json.loads((new / "settings.json").read_text(encoding="utf-8"))
     assert got["design"]["photo"] == str(new / "design_photo.jpg")
     assert not paths.migrate(str(old), str(new))          # 두 번째는 하지 않는다
+
+
+def test_migrate_never_again_after_kodas_data_deleted(tmp_path):
+    """KODAS 데이터를 지워도 예전 %APPDATA% 기록이 되살아나지 않는다(처음 상태로 시작)."""
+    import paths
+    import shutil
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    (old / "settings.json").write_text("{}", encoding="utf-8")
+    (old / "나의공문.json").write_text("{}", encoding="utf-8")
+    assert paths.migrate(str(old), str(new))
+    assert (old / paths.MOVED_MARK).exists()
+    shutil.rmtree(new)                                   # 사용자가 KODAS 데이터를 지움
+    assert not paths.migrate(str(old), str(new))
+    assert not new.exists()
+
+
+def test_migrate_marks_pc_that_moved_before_mark_existed(tmp_path):
+    import paths
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir(); new.mkdir()
+    (old / "settings.json").write_text("{}", encoding="utf-8")
+    (new / "settings.json").write_text("{}", encoding="utf-8")
+    assert not paths.migrate(str(old), str(new))
+    assert (old / paths.MOVED_MARK).exists()

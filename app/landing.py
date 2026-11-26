@@ -118,6 +118,7 @@ class Sidebar(HitCanvas):
         self.profile = profile or (lambda: ("", "", ""))
         self.on_profile = on_profile
         self.active = "home"
+        self.rects = {}                 # 그린 자리 {이름: (x0, y0, x1, y1)} — 튜토리얼이 가리킨다
         self._img = None
         self._job = None
         self.bind("<Configure>", lambda _e: self._schedule())
@@ -194,10 +195,34 @@ class Sidebar(HitCanvas):
                                  font=(FONT, fs(11.5, k, 9), "bold" if on else "normal"),
                                  fill=PRIMARY_D if on else TEXT)
             cmd = self.commands.get(key)
+            self.rects[key] = (x0, y, x1, y + ih)
             self.add_hit((x0, y, x1, y + ih), cmd,
                          (lambda t=t, on=on: lambda v: self.itemconfigure(
                              t, fill=PRIMARY_D if (v or on) else TEXT))())
             y += ih + 8 * k
+
+        # 나의 공문 작성 밑: [품질평가서 작성] 큰 네모 칸(둥근 모서리·그라데이션·그림자)
+        qcmd = self.commands.get("quality")
+        qh = 96 * k
+        if qcmd:                                       # 자리가 모자라면 아래 관리소 카드가 숨는다
+            qx0, qx1, qy0 = 14 * k, w - 14 * k, y + 6 * k
+            qy1 = qy0 + qh
+            P.shadow(qx0 + 4 * k, qy0 + 6 * k, qx1 - 4 * k, qy1, 16 * k, alpha=60, dy=7, color=PRIMARY_D)
+            P.gradient_rrect(qx0, qy0, qx1, qy1, 16 * k, *ui_kit.HERO)
+            P.sparkle(qx1 - 24 * k, qy1 - 24 * k, 7 * k, alpha=220)
+            P.sparkle(qx1 - 40 * k, qy1 - 14 * k, 4 * k, alpha=200)
+            P.rrect(qx0 + 16 * k, qy0 + 18 * k, qx0 + 54 * k, qy0 + 56 * k, 11 * k, "#ffffff", alpha=60)
+            P.icon("report", qx0 + 35 * k, qy0 + 37 * k, 20 * k, "#ffffff")
+            qt = self.create_text(qx0 + 66 * k, qy0 + 30 * k, anchor="w", text="품질평가서 작성",
+                                  font=(FONT, fs(12, k, 10), "bold"), fill="#ffffff")
+            self.create_text(qx0 + 66 * k, qy0 + 51 * k, anchor="w", text="평가표 점수·근거·초안",
+                             font=(FONT, fs(8.5, k, 8)), fill="#e8edff")
+            self.create_text(qx0 + 18 * k, qy1 - 18 * k, anchor="w", text="바로 시작하기  ›",
+                             font=(FONT, fs(9, k, 8), "bold"), fill="#ffffff")
+            self.rects["quality"] = (qx0, qy0, qx1, qy1)
+            self.add_hit((qx0, qy0, qx1, qy1), qcmd,
+                         lambda v: self.itemconfigure(qt, fill="#fff3c4" if v else "#ffffff"))
+            y = qy1 + 8 * k
 
         # 아래: 관리소 · 담당자 카드
         org, place, name = self.profile()
@@ -218,6 +243,7 @@ class Sidebar(HitCanvas):
                                    text=f"{ellipsize(name, 8)} 님" if name else "담당자 정보 넣기",
                                    font=(FONT, fs(10.5, k, 9)), fill=TEXT)
             P.icon("chevron", x1 - 22 * k, mid + 29 * k, 11 * k, SUB)
+            self.rects["profile"] = (x0, cy0, x1, cy1)
             self.add_hit((x0, cy0, x1, cy1), self.on_profile,
                          lambda v: self.itemconfigure(who, fill=PRIMARY_D if v else TEXT))
 
@@ -234,8 +260,12 @@ class Home(HitCanvas):
 
     def __init__(self, parent, on_select, logo_path: str = "", version: str = "", counts: dict | None = None,
                  on_pick=None, items=None, on_new=None, shortcuts=(), history=None, on_history=None, user=None,
-                 on_more=None):
+                 on_more=None, todo=None, on_todo=None, on_todo_all=None, on_check=None):
         super().__init__(parent, bg=PAGE)
+        self.todo = todo or (lambda: [])        # () → 이달 작성해야 할 문서 [{"title","date","urgency",…}]
+        self.on_todo = on_todo                  # 줄을 누르면 on_todo(항목)
+        self.on_todo_all = on_todo_all          # '전체보기' → 나의 공문·업무 일정표
+        self.on_check = on_check                # [품질평가 체크하기] 칸(아직 준비 중)
         self.on_more = on_more                  # '비슷한 공문 모두 보기' → on_more(검색어)
         self.on_select = on_select
         self.on_pick = on_pick                  # 검색 결과를 누르면 on_pick(번호)
@@ -247,6 +277,7 @@ class Home(HitCanvas):
         self.user = user or (lambda: "")
         self.version = version
         self.counts = counts or {}
+        self.rects = {}                         # 그린 자리 {이름: (x0, y0, x1, y1)} — 튜토리얼이 가리킨다
         self.query = tk.StringVar()
         self.search, self.search_entry = _search_box(self, self.query, "찾을 공문 이름 (예: 승강기, 갱신)",
                                                      border=CARD, focus=CARD)
@@ -443,6 +474,7 @@ class Home(HitCanvas):
         P.icon("chevron", tx + bw - 26 * k, by + bh / 2, 11 * k, TEXT)
         bt = self.create_text(tx + 52 * k, by + bh / 2, anchor="w", text="새 공문 작성하기",
                               font=(FONT, fs(12, k, 10), "bold"), fill=TEXT)
+        self.rects["new"] = (tx, by, tx + bw, by + bh)
         self.add_hit((tx, by, tx + bw, by + bh), self.on_new,
                      lambda v: self.itemconfigure(bt, fill=PRIMARY_D if v else TEXT))
 
@@ -472,36 +504,25 @@ class Home(HitCanvas):
             self.add_hit((cx0, cy0, cx0 + cw, cy0 + card_h), lambda a=area: self.on_select(a),
                          (lambda t=title: lambda v: self.itemconfigure(t, fill=PRIMARY_D if v else TEXT))())
 
-        # ---- 통계 3개 ----
-        rows = self.history()
-        done = [r for r in rows if is_done(r)]
-        month = f"{dt.date.today():%Y-%m}"
-        stats = (("작성한 문서", len(done), "건", "page", "blue"),
-                 ("등록된 서식", len(self.items()), "개", "layers", "violet"),
-                 ("이번 달 작성", sum(1 for r in done if r.get("시각", "").startswith(month)), "건", "history", "teal"))
+        # ---- 품질평가 체크하기(준비 중) ----
         sy0 = cy0 + card_h + gap
         sy1 = sy0 + stat_h
-        sg = 14 * k
-        sw3 = (x1 - x0 - 2 * sg) / 3
-        for i, (label, value, unit, icon, tint) in enumerate(stats):
-            sx0 = x0 + i * (sw3 + sg)
-            P.card(sx0, sy0, sx0 + sw3, sy1, 16 * k)
-            mid = (sy0 + sy1) / 2
-            P.tint_icon(icon, sx0 + 44 * k, mid, 27 * k, tint, square=True, size=22 * k)
-            P.wave(sx0 + sw3 * 0.6, sy1 - 14 * k, sx0 + sw3 - 16 * k, min(stat_h * 0.42, 46 * k),
-                   TINTS[tint][1], alpha=34)
-            self.create_text(sx0 + 86 * k, mid - 15 * k, anchor="w", text=label,
-                             font=(FONT, fs(10, k, 8.5)), fill=SUB)
-            v = self.create_text(sx0 + 86 * k, mid + 14 * k, anchor="w", text=f"{value:,}",
-                                 font=(FONT, fs(20, k, 13), "bold"), fill=TEXT)
-            vb = self.bbox(v)
-            self.create_text(vb[2] + 3 * k, mid + 18 * k, anchor="w", text=unit,
-                             font=(FONT, fs(11, k, 9)), fill=TEXT)
-            hover = (lambda t=v: lambda on: self.itemconfigure(t, fill=PRIMARY_D if on else TEXT))()
-            if i == 1 and self.on_new:          # 등록된 서식 → 서식 고르기 화면
-                self.add_hit((sx0, sy0, sx0 + sw3, sy1), self.on_new, hover)
-            elif i != 1 and self.on_history:
-                self.add_hit((sx0, sy0, sx0 + sw3, sy1), self.on_history, hover)
+        P.card(x0, sy0, x1, sy1, 16 * k)
+        mid = (sy0 + sy1) / 2
+        P.tint_icon("report", x0 + 46 * k, mid, 27 * k, "teal", square=True, size=22 * k)
+        P.wave(x0 + (x1 - x0) * 0.7, sy1 - 14 * k, x1 - 16 * k, min(stat_h * 0.42, 46 * k),
+               TINTS["teal"][1], alpha=34)
+        ct = self.create_text(x0 + 90 * k, mid - 12 * k, anchor="w", text="품질평가 체크하기",
+                              font=(FONT, fs(14, k, 10), "bold"), fill=TEXT)
+        self.create_text(x0 + 91 * k, mid + 14 * k, anchor="w", text="아직은 준비 중입니다.",
+                         font=(FONT, fs(10, k, 8.5)), fill=MUTED)
+        cb = self.bbox(ct)
+        chip_w = 62 * k
+        P.rrect(cb[2] + 10 * k, mid - 22 * k, cb[2] + 10 * k + chip_w, mid - 2 * k, 10 * k, TINTS["amber"][0])
+        self.create_text(cb[2] + 10 * k + chip_w / 2, mid - 12 * k, anchor="center", text="준비 중",
+                         font=(FONT, fs(8.5, k, 7), "bold"), fill=TINTS["amber"][1])
+        self.add_hit((x0, sy0, x1, sy1), self.on_check,
+                     lambda v: self.itemconfigure(ct, fill=PRIMARY_D if v else TEXT))
 
         # ---- 오른쪽: 바로가기 ----
         px0, px1 = rx0, w - m
@@ -536,46 +557,64 @@ class Home(HitCanvas):
                 lt = self.create_text(tx0 + tw / 2, ty0 + th * 0.76, anchor="center", text=label,
                                       font=(FONT, fs(10, k, 8.5)), fill=TEXT,
                                       width=tw - 16 * k, justify="center")   # 긴 이름은 두 줄로
+            self.rects["sc:" + label] = (tx0, ty0, tx0 + ww, ty0 + th)
             self.add_hit((tx0, ty0, tx0 + ww, ty0 + th), cmd,
                          (lambda t=lt: lambda v: self.itemconfigure(t, fill=PRIMARY_D if v else TEXT))())
 
-        # ---- 오른쪽: 최근 작성 문서 ----
+        # ---- 오른쪽: 이달 작성해야 할 문서(나의 공문·업무 일정표에 기한을 넣은 것) ----
         p2y0 = p1y1 + gap
-        p2y1 = h - m
+        p2y1 = h - m - 16 * k
+        self.create_text(px1 - 4 * k, p2y1 + 8 * k, anchor="ne", justify="right", width=rw,
+                         text="Developers: 최문원 · 오영철 · 이동욱 · 김경훈",
+                         font=(FONT, fs(7.5, k, 7)), fill=MUTED)          # 개발자(작고 연하게)
         P.card(px0, p2y0, px1, p2y1, 18 * k)
-        self.create_text(px0 + pad + 2 * k, p2y0 + 32 * k, anchor="w", text="최근 작성 문서",
+        self.rects["todo"] = (px0, p2y0, px1, p2y1)
+        self.create_text(px0 + pad + 2 * k, p2y0 + 32 * k, anchor="w", text="이달 작성해야 할 문서",
                          font=(FONT, fs(14, k, 10), "bold"), fill=TEXT)
-        if self.on_history:
+        if self.on_todo_all:
             more = self.create_text(px1 - pad - 14 * k, p2y0 + 32 * k, anchor="e", text="전체보기",
                                     font=(FONT, fs(9.5, k, 8)), fill=SUB)
             P.icon("chevron", px1 - pad - 4 * k, p2y0 + 32 * k, 9 * k, SUB)
             mb = self.bbox(more)
-            self.add_hit((mb[0] - 4 * k, mb[1] - 6 * k, px1 - pad + 4 * k, mb[3] + 6 * k), self.on_history,
+            self.add_hit((mb[0] - 4 * k, mb[1] - 6 * k, px1 - pad + 4 * k, mb[3] + 6 * k), self.on_todo_all,
                          lambda v: self.itemconfigure(more, fill=PRIMARY_D if v else SUB))
+        try:
+            todo = self.todo()
+        except Exception:                       # 일정 파일이 깨졌어도 홈 화면은 뜨게
+            todo = []
         ry = p2y0 + 58 * k
-        rh, rg = 70 * k, 8 * k
+        rh, rg = 62 * k, 8 * k
         fit = max(0, int((p2y1 - pad + rg - ry) // (rh + rg)))
-        if not rows:
+        if not todo:
             self.create_text((px0 + px1) / 2, (ry + p2y1) / 2, anchor="center", justify="center",
-                             text="아직 작성한 문서가 없습니다.\n공문을 작성하면 여기에 보입니다.",
+                             text="이달 기한이 있는 일이 없습니다.\n[나의 공문 작성]에서 📅 기한을 넣으면\n여기에 보입니다.",
                              font=(FONT, fs(10, k, 8.5)), fill=MUTED)
+        colors = {"soon": "#c99700", "near": "#ee7a00", "over": "#d93025"}
+        tints = {"soon": "amber", "near": "amber", "over": "red"}
         chars = max(8, int((rw - 120 * k) / (11 * k)))
-        for r in rows[:fit]:
+        today = dt.date.today()
+        shown = todo[:fit] if len(todo) <= fit else todo[:max(0, fit - 1)]
+        for it in shown:
             rx = px0 + pad - 6 * k
             P.rrect(rx, ry, px1 - pad + 6 * k, ry + rh, 12 * k, SIDEBAR, outline=BORDER)
-            ok = is_done(r)
-            P.tint_icon("page", rx + 30 * k, ry + rh / 2, 18 * k, "blue" if ok else "red", square=True,
-                        size=16 * k)
-            title = (r.get("제목") or r.get("서식") or "").strip() or "(제목 없음)"
-            self.create_text(rx + 58 * k, ry + rh / 2 - 11 * k, anchor="w", text=ellipsize(title, chars),
-                             font=(FONT, fs(10.5, k, 8.5), "bold"), fill=TEXT)
-            self.create_text(rx + 58 * k, ry + rh / 2 + 12 * k, anchor="w",
-                             text=_fmt_time(r.get("시각", "")) + ("" if ok else "  ·  실패"),
-                             font=(FONT, fs(9, k, 8)), fill=SUB if ok else "#d14343")
-            P.icon("more", px1 - pad - 14 * k, ry + rh / 2, 14 * k, SUB)
-            if self.on_history:
-                self.add_hit((rx, ry, px1 - pad + 6 * k, ry + rh), self.on_history)
+            lv = it.get("urgency")
+            color = colors.get(lv, TEXT)
+            P.tint_icon("page" if it["task"].get("tpl") else "list", rx + 28 * k, ry + rh / 2, 17 * k,
+                        tints.get(lv, "blue"), square=True, size=15 * k)
+            self.create_text(rx + 54 * k, ry + rh / 2 - 10 * k, anchor="w", text=ellipsize(it["title"], chars),
+                             font=(FONT, fs(10.5, k, 8.5), "bold"), fill=color)
+            d, left = it["date"], (it["date"] - today).days
+            when = "오늘까지" if left == 0 else (f"{-left}일 지남" if left < 0 else f"{left}일 남음")
+            self.create_text(rx + 54 * k, ry + rh / 2 + 12 * k, anchor="w",
+                             text=f"{d.month}월 {d.day}일까지 · {when}",
+                             font=(FONT, fs(9, k, 8), "bold" if lv else "normal"), fill=colors.get(lv, SUB))
+            if self.on_todo:
+                self.add_hit((rx, ry, px1 - pad + 6 * k, ry + rh), lambda it=it: self.on_todo(it))
             ry += rh + rg
+        if len(todo) > len(shown):
+            self.create_text((px0 + px1) / 2, ry + 12 * k, anchor="center",
+                             text=f"외 {len(todo) - len(shown)}건 더 있음 — 전체보기",
+                             font=(FONT, fs(9, k, 8)), fill=SUB)
 
         self._img = P.finish()
         self.create_image(0, 0, anchor="nw", image=self._img, tags="bg")

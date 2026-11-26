@@ -13,7 +13,7 @@ import sys
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 import complex_info
 import doc_template as dtpl
@@ -452,7 +452,7 @@ class App:
         self.sidebar = landing.Sidebar(root, {"home": self._go_home, "write": self._show_write,
                                               "picker": self._show_picker, "history": self._show_history,
                                               "complex": self._show_complex, "settings": self._show_settings,
-                                              "mydocs": self._show_mydocs},
+                                              "mydocs": self._show_mydocs, "quality": self._quality_menu},
                                        self.k, VERSION, profile=self._profile, on_profile=self._show_complex)
         self.sidebar.pack(side="left", fill="y")
         self.main = tk.Frame(root, bg=style.lookup("TFrame", "background") or "#fafafa")
@@ -477,15 +477,18 @@ class App:
                      ("서식 폴더 열기", "folder", "amber", lambda: os.startfile(paths.template_dir())),
                      ("나의 공문 업로드", "upload", "green", self._import_pdf),
                      ("사용 방법", "help", "violet", self._show_help),
-                     ("품질평가서 작성", "report", "teal", self._quality_menu),
-                     ("임대업무 기록하기", "list", "pink", self._rental_menu))
+                     ("임대담당자 자격검증 기록하기", "list", "pink", self._verify_log))
         self.landing = landing.Landing(self.main, self._enter_area, logo, VERSION, self._area_counts(),
                                        on_pick=self._pick_from_home,
                                        items=lambda: list(enumerate(self.templates)),
                                        on_new=self._show_picker, shortcuts=shortcuts,
                                        history=self._history_rows, on_history=self._show_history,
                                        user=lambda: self._profile()[2],
-                                       on_more=lambda q: self._show_picker(query=q))
+                                       on_more=lambda q: self._show_picker(query=q),
+                                       todo=self._month_due, on_todo=self._open_due,
+                                       on_todo_all=lambda: self._show_mydocs(tab=0),
+                                       on_check=lambda: messagebox.showinfo(
+                                           "품질평가 체크하기", "아직은 준비 중입니다.", parent=self.root))
         # 새 공문 작성(서식 고르기) 화면: 분야 탭 + 모든 분야에서 비슷한 공문 찾기
         self.picker = landing.Picker(self.main, self._pick_template, self._go_home, logo,
                                      all_items=lambda: list(enumerate(self.templates)), on_area=self._set_area)
@@ -493,6 +496,194 @@ class App:
         self.history_screen = landing.HistoryScreen(self.main, self._go_home,
                                                     lambda: os.startfile(paths.sub_dir("logs")))
         self._go_home()
+        import tutorial
+        if not tutorial.seen():                 # 처음 켠 사람에게만 튜토리얼(다 보거나 건너뛰면 다시 안 뜸)
+            root.after(1500, self._tutorial)
+        if getattr(sys, "frozen", False):     # 한 달마다 내 데이터 자동 백업(KODAS 데이터 밖 'KODAS 자동백업')
+            root.after(8000, self._auto_backup)
+
+    def _open_auto_backup(self):
+        """[환경 설정 → 자동 백업 폴더 열기]"""
+        import data_backup
+        try:
+            os.startfile(data_backup.auto_dir())
+        except OSError as e:
+            messagebox.showerror("자동 백업", str(e), parent=self.root)
+
+    def _auto_backup(self):
+        """마지막 자동 백업이 한 달 지났으면 뒤에서 내 데이터를 zip으로 남긴다(초기화돼도 남는 자리)."""
+        import data_backup
+
+        def work():
+            try:
+                made = data_backup.auto_backup()
+            except Exception as e:
+                self.log(f"⚠️ 자동 백업을 하지 못했습니다: {e}")
+                return
+            if made:
+                self.log(f"💾 한 달 자동 백업을 저장했습니다: {made}")
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================= 튜토리얼 =================
+    def _tutorial(self):
+        """처음 시작 튜토리얼: 기능마다 화면을 직접 열고 설명할 자리를 차례로 강조한다.
+        단지기본정보 작성 → 이달 작성해야 할 문서 → 나의 공문 작성 → 임대담당자 자격검증 기록하기 → 공문 작성."""
+        import tutorial
+        from tutorial import canvas_box, widget_box
+        if getattr(self, "tutorial_on", None):
+            return
+        state = {"verify": False}            # 튜토리얼이 자격검증 기록 창을 열었는지(나갈 때 닫는다)
+
+        def board():
+            self._show_mydocs(tab=0)
+            return self.mydocs_boards[0]
+
+        def go_home():
+            close_verify()
+            if not self.landing.winfo_ismapped():
+                self._go_home()
+
+        def go_mydocs():
+            close_verify()
+            board()
+
+        def go_verify():
+            win = getattr(self, "_verify_win", None)
+            if win is None or not win.winfo_exists():
+                self._verify_log()
+                state["verify"] = True
+            else:
+                win.deiconify()
+                win.lift()
+
+        def close_verify():
+            win = getattr(self, "_verify_win", None)
+            if state["verify"] and win is not None and win.winfo_exists():
+                win._close()
+            state["verify"] = False
+
+        def verify_win():
+            win = getattr(self, "_verify_win", None)
+            return win if win is not None and win.winfo_exists() else None
+
+        def vbox(*names):
+            def box():
+                win = verify_win()
+                if not win:
+                    return None
+                ws = []
+                for n in names:
+                    w = getattr(win, n, None)
+                    ws.extend(w[:1] if isinstance(w, list) else [w])
+                return widget_box(*ws)
+            return box
+
+        def first(attr, fallback="holder"):
+            def box():
+                b = self.mydocs_boards[0]
+                items = getattr(b, attr, None)
+                if isinstance(items, list):
+                    return widget_box(items[0]) if items else widget_box(getattr(b, fallback))
+                return widget_box(items) if items is not None else widget_box(getattr(b, fallback))
+            return box
+
+        def go_write():
+            close_verify()
+            if self.current is not None:
+                self._show_write()
+                return
+            i = next((n for n, t in enumerate(self.templates) if t.area == self.area), 0 if self.templates else None)
+            if i is not None:
+                self._pick_template(i)
+
+        A, B, C, D, E = ("단지기본정보 작성", "이달 작성해야 할 문서", "나의 공문 작성",
+                         "임대담당자 자격검증 기록하기", "공문 작성")
+        steps = [
+            dict(part=A, title="바로가기 [단지기본정보]",
+                 text="여기를 누르면 단지기본정보 입력 화면이 열립니다.\n(왼쪽 아래 관리소 카드를 눌러도 열립니다)",
+                 go=go_home, box=lambda: canvas_box(self.landing, "sc:단지기본정보")),
+            dict(part=A, title="홈넷 계정",
+                 text="홈넷 아이디(사번)와 비밀번호를 넣습니다.\n공문을 홈넷에 자동으로 올릴 때 이 계정으로 로그인합니다.",
+                 go=self._show_complex, box=lambda: widget_box(self.tut_acc)),
+            dict(part=A, title="우리 관리소·단지",
+                 text="관리소·단지명·담당자 등을 처음 한 번만 넣으면\n모든 공문의 빈칸에 자동으로 들어갑니다.",
+                 box=lambda: widget_box(self.tut_info)),
+            dict(part=A, title="[저장]",
+                 text="다 넣었으면 [저장]을 눌러 주세요. 저장해야 공문에 반영됩니다.",
+                 box=lambda: widget_box(self.tut_save)),
+
+            dict(part=B, title="① [➕ 업무 추가]",
+                 text="[나의 공문 작성]에서 [➕ 업무 추가]로 할 일을 넣습니다.\n구분: 일반(한 번) · 매월 · 분기별 · 정해진 달",
+                 go=go_mydocs, box=first("task_btn", "add_btn")),
+            dict(part=B, title="② [📅 기한] 넣기",
+                 text="줄 오른쪽 [📅 기한]을 눌러 언제까지인지 넣습니다.\n"
+                      "· 일반 업무: 날짜 (예: 12-5)\n· 매월·분기별·정해진 달: 그 달 며칠까지 (예: 15, 말일)",
+                 go=go_mydocs, box=first("due_links")),
+            dict(part=B, title="③ 이달 작성해야 할 문서",
+                 text="기한을 넣은 일이 홈 화면 오른쪽에 기한 빠른 순으로 나옵니다.\n"
+                      "남은 날짜에 따라 글자 색이 바뀌고, 체크해 끝낸 일은 사라집니다. 누르면 바로 작성 화면으로 갑니다.",
+                 go=go_home, box=lambda: canvas_box(self.landing, "todo"),
+                 legend=[("기한 7일 전부터  —  노랑", "#c99700"), ("기한 3일 전부터  —  주황", "#ee7a00"),
+                         ("기한이 지나면  —  빨강 (n일 지남)", "#d93025")]),
+
+            dict(part=C, title="왼쪽 메뉴 [나의 공문 작성]",
+                 text="내 업무 공문과 할 일을 한 목록(나의 공문·업무 일정표)에서 관리합니다.",
+                 go=go_mydocs, box=lambda: canvas_box(self.sidebar, "mydocs")),
+            dict(part=C, title="[➕ 공문 넣기]",
+                 text="등록된 서식 중 내 업무 공문을 골라 넣습니다(여러 개 가능).\n"
+                      "넣을 때 매월·분기별·정해진 달 중 언제 쓰는 공문인지 고릅니다.",
+                 go=go_mydocs, box=first("add_btn")),
+            dict(part=C, title="달 바꾸기",
+                 text="◀ ▶로 보는 달을 바꿉니다. 매월 공문은 달마다 따로 체크되고,\n"
+                      "이름 속 {월} 글자도 그 달에 맞게 바뀝니다. [끝낸 공문·업무 숨기기]로 남은 것만 볼 수 있습니다.",
+                 go=go_mydocs, box=first("nav")),
+            dict(part=C, title="다 쓴 공문 체크",
+                 text="다 쓴 공문은 체크합니다. 실수로 누르지 않게 '완료하실 건가요?'를 한 번 묻습니다.\n"
+                      "이름을 두 번 누르면 이름 고치기 · ▲▼ 순서 바꾸기 · ✕ 지우기",
+                 go=go_mydocs, box=first("checks")),
+            dict(part=C, title="[✎ 작성]",
+                 text="공문 줄의 [✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다.",
+                 go=go_mydocs, box=first("open_links")),
+
+            dict(part=D, title="바로가기 [임대담당자 자격검증 기록하기]",
+                 text="주민등록 검증결과(갱신계약·주택정기·명의변경)를 기록하는 창이 열립니다.",
+                 go=go_home, box=lambda: canvas_box(self.landing, "sc:임대담당자 자격검증 기록하기")),
+            dict(part=D, title="탭별 기록표",
+                 text="위 탭에서 갱신계약·주택정기·명의변경 등을 고르고 표에 적습니다.\n"
+                      "칸을 두 번 누르거나 바로 글자를 치면 고치고, Enter·Tab으로 옮기면 곧바로 저장됩니다.",
+                 go=go_verify, over=verify_win, box=vbox("nb")),
+            dict(part=D, title="[＋ 행 추가]",
+                 text="새 차수·새 달은 [＋ 행 추가]로 줄을 늘립니다.\n"
+                      "기록한 차수·요청일·건수는 갱신계약·주택소유 정기검색 공문을 쓸 때 자동으로 들어갑니다.",
+                 go=go_verify, over=verify_win, box=vbox("add_btns")),
+            dict(part=D, title="엑셀로 받기 · 올려 적용",
+                 text="[⬇ 엑셀로 받기]로 엑셀 파일로 받고, 엑셀에서 고친 뒤 [⬆ 엑셀 올려 적용]으로 다시 넣습니다.\n"
+                      "(시트 이름·칸 제목은 바꾸지 마세요)",
+                 go=go_verify, over=verify_win, box=vbox("xl_down", "xl_up")),
+
+            dict(part=E, title="[새 공문 작성하기]",
+                 text="홈 화면에서 [새 공문 작성하기]를 누릅니다. (위 검색칸에 '갱신'처럼 바로 찾아도 됩니다)",
+                 go=go_home, box=lambda: canvas_box(self.landing, "new")),
+            dict(part=E, title="서식 고르기",
+                 text="분야(임대·시설·주거복지·주택관리)를 고르고 쓸 서식을 누릅니다.",
+                 go=lambda: (close_verify(), self._show_picker()), box=lambda: widget_box(self.picker)),
+            dict(part=E, title="1. 이름·날짜 넣기",
+                 text="빈칸(이름·동호수·날짜 등)만 넣습니다.\n단지기본정보 값과 자격검증 기록 값은 자동으로 들어가 있습니다.",
+                 go=go_write, box=lambda: widget_box(self.tut_inputs)),
+            dict(part=E, title="2. 확인하기",
+                 text="제목·수신자·본문이 바로 만들어집니다.\n고칠 곳은 [✏ 본문 직접 고치기]로 고칩니다.",
+                 go=go_write, box=lambda: widget_box(self.preview_box)),
+            dict(part=E, title="[홈넷에 자동 작성 ▶]",
+                 text="누르면 홈넷 표준기안문이 자동으로 작성됩니다(작업 중 창이 뜹니다).\n"
+                      "결재올림(상신)은 하지 않으니 브라우저에서 확인한 뒤 직접 올려 주세요. 이제 시작해 볼까요?",
+                 go=go_write, box=lambda: widget_box(self.auto_btn)),
+        ]
+
+        def closed():
+            close_verify()
+            self.tutorial_on = None
+            self._go_home()
+        self.tutorial_on = tutorial.Tutorial(self.root, steps, on_close=closed)
 
     # ================= 시작 화면 · 분야 =================
     def _area_counts(self) -> dict:
@@ -500,6 +691,18 @@ class App:
         for t in self.templates:
             counts[t.area] = counts.get(t.area, 0) + 1
         return counts
+
+    def _month_due(self) -> list:
+        """홈 [이달 작성해야 할 문서]: 나의 공문·업무 일정표(와 내가 만든 일정표)에서 기한을 넣은 이달 일."""
+        import work_schedule
+        return work_schedule.month_due()
+
+    def _open_due(self, item):
+        """이달 작성해야 할 문서를 누르면: 공문이면 그 서식 작성 화면, 업무면 일정표."""
+        if item["task"].get("tpl") and item["board"] == "나의 공문·업무 일정표":
+            self._mydocs_open(item["task"])
+        else:
+            self._show_mydocs(tab=0)
 
     OVERLAYS = ("landing", "picker", "info_screen", "history_screen", "mydocs_screen")
 
@@ -671,12 +874,17 @@ class App:
         f.add_command(label="자격검증 기록…", command=self._verify_log)
         f.add_command(label="임대업무 일정표…", command=self._schedule)
         f.add_separator()
+        f.add_command(label="내 데이터 내려받기 (설정·서식·기록 → zip)…", command=self._export_data)
+        f.add_command(label="내 데이터 등록하기 (내려받은 zip → 이 KODAS)…", command=self._import_data)
+        f.add_separator()
         f.add_command(label="작업 기록 폴더 열기", command=lambda: os.startfile(paths.sub_dir("logs")))
         f.add_command(label="저장된 계정 지우기 (담당자가 바뀔 때)", command=self._clear_accounts)
         bar.add_cascade(label="파일", menu=f)
         hlp = tk.Menu(bar, tearoff=0)
         hlp.add_command(label="사용 방법", command=self._show_help)
         hlp.add_command(label="서식 만드는 법", command=self._show_template_help)
+        hlp.add_separator()
+        hlp.add_command(label="튜토리얼 다시 보기", command=self._tutorial)
         bar.add_cascade(label="도움말", menu=hlp)
         self.root.config(menu=bar)
 
@@ -784,14 +992,17 @@ class App:
                     self.log_box.insert("end", f"[{dt.datetime.now():%H:%M:%S}] {payload}\n")
                     self.log_box.see("end")
                     self.log_box.config(state="disabled")
+                    if getattr(self, "busy_win", None):
+                        self.busy_win.set(payload)
                 elif kind == "call":
                     payload()
         except queue.Empty:
             pass
         self.root.after(100, self._drain)
 
-    def run_bg(self, work, on_ok=None, on_err=None):
-        """work()를 작업 스레드에서 실행하고 결과를 메인 스레드 콜백으로 넘긴다."""
+    def run_bg(self, work, on_ok=None, on_err=None, busy: str | None = None):
+        """work()를 작업 스레드에서 실행하고 결과를 메인 스레드 콜백으로 넘긴다.
+        busy를 주면 그 제목으로 '작업 중' 창을 띄우고 진행 글자를 보여 준다(끝나면 닫힘)."""
         if self.busy:
             messagebox.showinfo("진행 중", "다른 작업이 진행 중입니다. 잠시 기다려 주세요.")
             return
@@ -799,6 +1010,7 @@ class App:
         self.root.config(cursor="watch")
         self.progress.pack(fill="x", padx=4, pady=(0, 4), before=self.log_box)
         self.progress.start(15)
+        self.busy_win = ui_kit.BusyWindow(self.root, busy) if busy else None
 
         def runner():
             try:
@@ -814,6 +1026,9 @@ class App:
         threading.Thread(target=runner, daemon=True).start()
 
     def _done(self, cb, value):
+        if getattr(self, "busy_win", None):
+            self.busy_win.close()
+            self.busy_win = None
         self.busy = False
         self.root.config(cursor="")
         self.progress.stop()
@@ -823,7 +1038,7 @@ class App:
 
     def _row(self, parent, r, label, default="", secret=False, width=34, hint=""):
         ttk.Label(parent, text=label).grid(row=r, column=0, sticky="e", padx=8, pady=3)
-        e = ttk.Entry(parent, width=width, show="●" if secret else "")
+        e = ui_kit.PeekEntry(parent, width=width) if secret else ttk.Entry(parent, width=width)
         e.grid(row=r, column=1, sticky="w", padx=4, pady=3)
         if default:
             e.insert(0, default)
@@ -850,9 +1065,18 @@ class App:
         cv.pack(side="left", fill="both", expand=True)
 
         def wheel(e):
+            if cv.yview() == (0.0, 1.0):          # 다 보이면 굴리지 않는다
+                return
             cv.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+
+        def leave(_e):
+            # 안쪽 칸(단추·그림 등) 위로 옮겨 갈 때도 Leave가 오므로, 마우스가 정말 영역 밖일 때만 푼다
+            x, y = cv.winfo_pointerxy()
+            if not (cv.winfo_rootx() <= x < cv.winfo_rootx() + cv.winfo_width()
+                    and cv.winfo_rooty() <= y < cv.winfo_rooty() + cv.winfo_height()):
+                cv.unbind_all("<MouseWheel>")
         cv.bind("<Enter>", lambda _e: cv.bind_all("<MouseWheel>", wheel))
-        cv.bind("<Leave>", lambda _e: cv.unbind_all("<MouseWheel>"))
+        cv.bind("<Leave>", leave)
         return inner
 
     def _build_tab_account(self):
@@ -864,8 +1088,9 @@ class App:
 
         nav = ttk.Frame(tab)
         nav.pack(side="bottom", fill="x", padx=10, pady=8)
-        self._orange_button(nav, "저장", self._save_account).pack(side="right")
-        ttk.Button(nav, text="단지 항목 처음 값으로", command=self._reset_complex).pack(side="right", padx=8)
+        self.tut_save = self._orange_button(nav, "저장", self._save_account)     # tut_*: 튜토리얼이 가리킨다
+        self.tut_save.pack(side="right")
+        ttk.Button(nav, text="단지 항목 모두 비우기", command=self._reset_complex).pack(side="right", padx=8)
         ttk.Label(nav, foreground="#555", text="여기 값은 모든 공문의 빈칸({관리소}·{단지:관리소명} 등)에 "
                                                "자동으로 들어갑니다.").pack(side="left")
         ttk.Separator(tab).pack(side="bottom", fill="x")
@@ -873,6 +1098,7 @@ class App:
 
         info = ttk.LabelFrame(body, text="우리 관리소·단지 (처음 한 번만 입력 — 공문의 빈칸에 자동으로 들어갑니다)")
         info.pack(fill="x", padx=10, pady=4)
+        self.tut_info = info
         self.info_entries = {}
         r = 0
         for key, label, hint in INFO_FIELDS:
@@ -925,11 +1151,14 @@ class App:
 
         acc = ttk.LabelFrame(body, text="계정 (홈넷 로그인에 씁니다)")
         acc.pack(fill="x", padx=10, pady=(8, 4), before=info)     # 계정·결재정보는 맨 위
+        self.tut_acc = acc
         self.homnet_id = self._row(acc, 0, "홈넷 아이디(사번)", c.get("homnet_id", ""))
-        self.homnet_pw = self._row(acc, 1, "홈넷 비밀번호", c.get("homnet_pw", ""), secret=True)
-        self.vpn_id = self._row(acc, 2, "VPN 아이디", c.get("vpn_id", ""),
-                                hint="사무실(사내망)에서는 비워도 됩니다")
-        self.vpn_pw = self._row(acc, 3, "VPN 비밀번호", c.get("vpn_pw", ""), secret=True)
+        self.homnet_pw = self._row(acc, 1, "홈넷 비밀번호", c.get("homnet_pw", ""), secret=True)  # 칠 때 한 글자씩 보임
+        # VPN 계정 칸은 두지 않는다: VPN(사내망)·홈넷에 먼저 접속·로그인한 뒤 작성한다(값은 늘 빈칸)
+        self.vpn_id, self.vpn_pw = ttk.Entry(acc), ttk.Entry(acc)
+        ttk.Label(acc, foreground="#c62828", font=FONT_B, justify="left",
+                  text="※ 홈넷에 먼저 로그인한 뒤 공문을 작성해 주세요. (사무실 밖에서는 VPN 접속 → 홈넷 로그인)"
+                  ).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 2))
         self.remember = tk.BooleanVar(value=bool(c.get("remember", True)))
         ttk.Checkbutton(acc, text="이 PC에 계정 기억하기 (암호화 저장)",
                         variable=self.remember).grid(row=4, column=1, sticky="w", padx=4, pady=3)
@@ -1011,8 +1240,9 @@ class App:
         return out
 
     def _reset_complex(self):
-        if not messagebox.askyesno("처음 값으로", "단지 항목(평형·계좌·업체 등)을 처음 값(광주우산3)으로 되돌릴까요?\n"
-                                              "관리소명·단지명·담당자·계정은 그대로 둡니다.", parent=self.root):
+        if not messagebox.askyesno("단지 항목 비우기", "단지 항목(평형·세대수·계좌·업체 등)을 모두 비울까요?\n"
+                                                 "관리소명·단지명·담당자·계정은 그대로 둡니다.\n"
+                                                 "(비운 뒤 [저장]을 눌러야 반영됩니다)", parent=self.root):
             return
         d = complex_info.defaults()
         for k, e in self.complex_entries.items():
@@ -1034,7 +1264,7 @@ class App:
                 self.net_status.set("● 사내망 연결됨")
                 self.net_label.config(foreground="#1a7f37")
             else:
-                self.net_status.set(f"● 사내망 미연결 ({reason}) — VPN 계정을 넣으면 자동 접속합니다")
+                self.net_status.set(f"● 사내망 미연결 ({reason}) — VPN에 접속하고 홈넷에 로그인한 뒤 작성해 주세요")
                 self.net_label.config(foreground="#c62828")
         self.run_bg(session.tunnel_alive, ok)
 
@@ -1112,6 +1342,7 @@ class App:
         # 입력칸이 길어져도(2안·3안 …) 아래 '2. 확인하기'가 밀려나지 않게, 높이를 제한하고 스크롤한다
         box = ttk.LabelFrame(right, text="1. 이름·날짜 넣기")
         box.pack(fill="x", padx=4, pady=(0, 6))
+        self.tut_inputs = box
         bg = ttk.Style(self.root).lookup("TFrame", "background") or "#fafafa"
         self.inputs_canvas = cv = tk.Canvas(box, highlightthickness=0, bd=0, bg=bg, height=10)
         sb = ttk.Scrollbar(box, orient="vertical", command=cv.yview)
@@ -1776,7 +2007,7 @@ class App:
             lbl.config(text="📒 자격검증 기록을 읽는 중…", foreground="#777")
             return
         if book is False:
-            lbl.config(text="📒 자격검증 기록을 읽지 못했습니다 — 바로가기 [임대업무 기록하기 → 임대담당자 자격검증 기록하기]를 확인해 주세요",
+            lbl.config(text="📒 자격검증 기록을 읽지 못했습니다 — 바로가기 [임대담당자 자격검증 기록하기]를 확인해 주세요",
                        foreground="#777")
             return
         if not month:
@@ -1968,7 +2199,7 @@ class App:
             messagebox.showerror("찾지 못함", f"{ex}\n\n차수를 확인하고 Enter로 다시 찾거나, "
                                             "날짜를 [✏ 본문 직접 고치기]에서 직접 넣어 주세요.")
 
-        self.run_bg(work, ok, err)
+        self.run_bg(work, ok, err, busy="홈넷에서 날짜 찾는 중")
 
     # ---------- 홈넷 수신자 업로드 엑셀 ----------
     def _build_upload_row(self, parent, row: int):
@@ -2357,7 +2588,7 @@ class App:
                 self.driver = session.open_homnet(hid, hpw, self.log)
 
             def notify(m):
-                self.q.put(("call", lambda: messagebox.showinfo("직접 해 주실 일", m)))
+                self.q.put(("call", lambda: self._busy_info("직접 해 주실 일", m)))
             return homnet_draft.create_drafts(self.driver, parts, log=self.log, notify=notify,
                                               password=hpw)
 
@@ -2378,7 +2609,17 @@ class App:
             messagebox.showerror("작성 실패", f"{ex}\n\n[브라우저로 미리보기]에서 본문을 복사해 "
                                              "직접 붙여 넣을 수도 있습니다.")
 
-        self.run_bg(work, ok, err)
+        self.run_bg(work, ok, err, busy="공문 작성 중")
+
+    def _busy_info(self, title, msg):
+        """작업 중 창이 안내 창을 가리지 않게 잠깐 숨겼다가 다시 띄운다."""
+        bw = getattr(self, "busy_win", None)
+        if bw:
+            bw.withdraw()
+        messagebox.showinfo(title, msg, parent=self.root)
+        if bw and getattr(self, "busy_win", None) is bw:
+            bw.deiconify()
+            bw.lift()
 
     def _remember_renewal(self, file_name: str, month: dt.date | None) -> None:
         """작성을 마친 공문의 갱신월을 서식별로 저장한다. 다음에 그 서식을 열면 이 달이 들어간다."""
@@ -2435,15 +2676,9 @@ class App:
             ("품질평가 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안, 증빙 폴더", self._quality_eval),
             ("한글파일 작성", "준비 중입니다", None)))
 
-    def _rental_menu(self):
-        """[임대업무 기록하기]: 임대담당자 자격검증 기록하기 / 임대업무 일정표 중 고른다."""
-        self._choice_menu("임대업무 기록하기", (
-            ("임대담당자 자격검증 기록하기", "주민등록 검증결과\n(갱신·주택정기·명의변경) 기록", self._verify_log),
-            ("임대업무 일정표", "할 일 체크 목록,\n매월·분기별·정해진 달 업무", self._schedule)))
-
     def _schedule(self):
-        """[임대업무 일정표]: 나의 공문 작성 화면의 '임대업무 일정표' 탭을 연다(같은 목록을 두 곳에서 고치지 않게)."""
-        self._show_mydocs(tab=1)
+        """[임대업무 일정표]: 나의 공문 작성 화면의 '나의 공문·업무 일정표' 탭을 연다(같은 목록을 두 곳에서 고치지 않게)."""
+        self._show_mydocs(tab=0)
 
     def _choice_menu(self, title: str, cards):
         """주황 카드 몇 개 중 하나를 고르는 작은 창. cards = ((제목, 설명, 할 일 또는 None=준비 중), …)."""
@@ -2597,32 +2832,137 @@ class App:
             return t.path
 
     def _show_mydocs(self, tab: int | None = None):
-        """왼쪽 메뉴 [나의 공문 작성]: 탭 두 개 — ① 나의 공문(내 업무 공문만 골라 달마다 체크하며 바로 쓰기)
-        ② 임대업무 일정표(할 일 체크 목록). 둘 다 같은 일정판(ScheduleBoard)이다."""
+        """왼쪽 메뉴 [나의 공문 작성]: 첫 탭 '나의 공문·업무 일정표' — 내 업무 공문(✎ 작성으로 바로 쓰기)과
+        임대업무 할 일을 한 목록에서 달마다 체크한다(나의공문일정.json). 그 뒤 탭은 내가 만든 일정표."""
         if self.edit_mode:
             self._toggle_edit()
         if getattr(self, "mydocs_screen", None) is None:
             import schedule_view
             import work_schedule
             screen = tk.Frame(self.main, bg=ui_kit.PAGE)
+            bar = ttk.Frame(screen, padding=(8, 8, 8, 0))
+            bar.pack(fill="x")
+            ttk.Button(bar, text="✕ 일정표 지우기", command=self._mydocs_del_board).pack(side="right")
+            ttk.Button(bar, text="✎ 이름 바꾸기", command=self._mydocs_rename_board).pack(side="right", padx=6)
+            ttk.Button(bar, text="➕ 일정표 추가", style="Accent.TButton",
+                       command=self._mydocs_add_board).pack(side="right")
+            ttk.Label(bar, text="내가 만든 일정표는 이름을 바꾸거나 지울 수 있습니다(나의 공문·업무 일정표는 그대로).",
+                      foreground=ui_kit.SUB).pack(side="left")
             nb = ttk.Notebook(screen)
-            nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+            nb.pack(fill="both", expand=True, padx=8, pady=(4, 0))
             docs = schedule_view.ScheduleBoard(
-                nb, self.k, title="나의 공문 작성", path=work_schedule.mydocs_path(), defaults=list,
-                word="공문", add_text="➕ 공문 넣기", on_add=self._mydocs_add, on_open=self._mydocs_open,
-                intro="등록된 서식 중 내 업무 공문만 골라 넣고(매월·분기별·정해진 달), 달마다 쓴 공문을 체크합니다. "
-                      "[✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다.")
-            sched = schedule_view.ScheduleBoard(nb, self.k)          # 임대업무 일정표(업무일정.json)
-            nb.add(docs, text="  나의 공문  ")
-            nb.add(sched, text="  임대업무 일정표  ")
-            self.mydocs_boards = (docs, sched)
+                nb, self.k, title="나의 공문·업무 일정표", path=work_schedule.merged_path(),
+                defaults=work_schedule.merged_defaults, word="공문·업무", add_text="➕ 공문 넣기",
+                on_add=self._mydocs_add, on_open=self._mydocs_open, task_button=True,
+                intro="등록된 서식 중 내 업무 공문은 [➕ 공문 넣기], 그 밖의 할 일은 [➕ 업무 추가]로 한 목록에 넣고"
+                      "(일반·매월·분기별·정해진 달) 달마다 체크합니다. 공문 줄의 [✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다.")
+            nb.add(docs, text="  나의 공문·업무 일정표  ")
+            self.mydocs_boards = [docs]
             self.mydocs_nb = nb
+            self.my_boards = work_schedule.load_boards()         # 내가 만든 일정표 탭들(나의일정표목록.json)
+            for entry in self.my_boards:
+                self._mydocs_board_tab(entry)
             nb.bind("<<NotebookTabChanged>>", lambda _e: self.mydocs_boards[nb.index("current")].reload())
             self.mydocs_screen = screen
         if tab is not None:
             self.mydocs_nb.select(tab)
         self._cover(self.mydocs_screen)
         self._nav("mydocs")
+
+    MYDOCS_FIXED = 1      # 나의 공문 작성 탭 중 고정 탭 수(나의 공문·업무 일정표) — 그 뒤는 내가 만든 일정표
+
+    def _mydocs_board_tab(self, entry, select=False):
+        import schedule_view
+        import work_schedule
+        board = schedule_view.ScheduleBoard(
+            self.mydocs_nb, self.k, title=entry["name"], path=work_schedule.board_file(entry), defaults=list,
+            intro="나만의 할 일을 [➕ 업무 추가]로 일반·매월·분기별·정해진 달로 넣고 달마다 체크합니다.")
+        self.mydocs_nb.add(board, text=f"  {entry['name']}  ")
+        self.mydocs_boards.append(board)
+        if select:
+            self.mydocs_nb.select(board)
+
+    def _mydocs_save_boards(self) -> bool:
+        import work_schedule
+        try:
+            work_schedule.save_boards(self.my_boards)
+            return True
+        except OSError as e:
+            messagebox.showerror("일정표", f"일정표 목록을 저장하지 못했습니다.\n{e}", parent=self.root)
+            return False
+
+    def _mydocs_ask_name(self, title, initial=""):
+        name = simpledialog.askstring(title, "일정표 이름", initialvalue=initial, parent=self.root)
+        name = (name or "").strip()
+        if not name:
+            return None
+        taken = {"나의 공문", "임대업무 일정표", "나의 공문·업무 일정표"} | {b["name"] for b in self.my_boards if b["name"] != initial}
+        if name in taken:
+            messagebox.showinfo(title, f"'{name}' 이름의 일정표가 이미 있습니다.", parent=self.root)
+            return None
+        return name
+
+    def _mydocs_add_board(self):
+        import work_schedule
+        name = self._mydocs_ask_name("일정표 추가")
+        if not name:
+            return
+        entry = work_schedule.new_board(name, self.my_boards)
+        self.my_boards.append(entry)
+        if self._mydocs_save_boards():
+            self._mydocs_board_tab(entry, select=True)
+        else:
+            self.my_boards.remove(entry)
+
+    def _mydocs_current_mine(self, title):
+        i = self.mydocs_nb.index("current") - self.MYDOCS_FIXED
+        if i < 0:
+            messagebox.showinfo(title, "내가 만든 일정표 탭을 먼저 골라 주세요.\n"
+                                "(나의 공문·업무 일정표 탭은 바꾸거나 지울 수 없습니다)", parent=self.root)
+            return None
+        return i
+
+    def _mydocs_rename_board(self):
+        i = self._mydocs_current_mine("이름 바꾸기")
+        if i is None:
+            return
+        entry = self.my_boards[i]
+        name = self._mydocs_ask_name("이름 바꾸기", entry["name"])
+        if not name or name == entry["name"]:
+            return
+        old = entry["name"]
+        entry["name"] = name
+        if not self._mydocs_save_boards():
+            entry["name"] = old
+            return
+        board = self.mydocs_boards[i + self.MYDOCS_FIXED]
+        self.mydocs_nb.tab(board, text=f"  {name}  ")
+        board.title_text = name
+        for w in board.winfo_children():                     # 일정표 위 제목 글자도 바꾼다
+            for c in w.winfo_children():
+                if isinstance(c, ttk.Label) and c.cget("text") == old:
+                    c.config(text=name)
+
+    def _mydocs_del_board(self):
+        import work_schedule
+        i = self._mydocs_current_mine("일정표 지우기")
+        if i is None:
+            return
+        entry = self.my_boards[i]
+        if not messagebox.askyesno("일정표 지우기", f"'{entry['name']}' 일정표와 그 안의 할 일·체크를 모두 지울까요?\n"
+                                   "(되돌릴 수 없습니다)", icon="warning", parent=self.root):
+            return
+        self.my_boards.pop(i)
+        if not self._mydocs_save_boards():
+            self.my_boards.insert(i, entry)
+            return
+        board = self.mydocs_boards.pop(i + self.MYDOCS_FIXED)
+        self.mydocs_nb.forget(board)
+        board.destroy()
+        try:
+            os.remove(work_schedule.board_file(entry))
+        except OSError:
+            pass
 
     def _mydocs_add(self, board):
         import schedule_view
@@ -2852,7 +3192,7 @@ class App:
             "바로가기 [단지기본정보] 또는 왼쪽 아래 관리소 카드를 누릅니다. 여기 넣은 값은 모든 공문의 빈칸에 자동으로 들어갑니다.",
             "[단지명]만 넣으면 관리소명·약칭은 자동으로 만들어집니다(예: 광주우산3 → 광주우산3관리소, 우산3).",
             "담당자 이름·전화번호, 공급유형, 동 범위, 평형·세대수, 계좌·업체를 넣습니다. 평형이 더 있으면 [➕ 평형 추가]로 칸을 늘립니다.",
-            "마우스 휠로 내려 홈넷 아이디(사번)·비밀번호를 넣습니다. 사무실 밖에서는 VPN 계정도 넣습니다. 다 넣었으면 [저장].",
+            "마우스 휠로 내려 홈넷 아이디(사번)·비밀번호를 넣습니다. 다 넣었으면 [저장]. 공문은 홈넷에 먼저 로그인한 뒤(사무실 밖은 VPN 접속 후) 작성합니다.",
             "화면 색·글씨체는 왼쪽 메뉴 [환경 설정]에서 고르고 [저장하고 다시 시작]을 누릅니다('내 사진'도 고를 수 있습니다).")),
         ("공문 쓸 때마다", (
             "① 처음 화면의 분야 카드나 [새 공문 작성하기], 또는 왼쪽 메뉴 [서식 고르기]에서 서식을 고릅니다. "
@@ -2868,19 +3208,21 @@ class App:
         ("나의 공문 작성 (왼쪽 메뉴 ★)", (
             "[➕ 공문 넣기]로 내 업무 공문만 골라 구분(일반·매월·분기별·정해진 달)을 정해 넣습니다. 업로드한 PDF 공문은 맨 위에 있습니다.",
             "◀ ▶ 와 [이번 달]로 달을 바꾸며 그 달에 쓴 공문을 체크합니다. '끝낸 공문 숨기기'를 켜면 체크한 공문은 숨습니다.",
-            "[✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다. ✕는 목록에서만 뺍니다(서식은 그대로).")),
+            "[✎ 작성]을 누르면 그 공문 작성 화면으로 바로 갑니다. ✕는 목록에서만 뺍니다(서식은 그대로).",
+            "[➕ 일정표 추가]로 나만의 일정표 탭을 여러 개 만들 수 있습니다(처음엔 '나의 업무 일정표' 하나). "
+            "임대업무 일정표와 같은 방식으로 할 일을 넣고 체크하며, [✎ 이름 바꾸기]·[✕ 일정표 지우기]로 고칩니다.")),
         ("나의 공문 업로드 (PDF → 서식)", (
             "바로가기 [나의 공문 업로드](또는 파일 메뉴)를 누르고 공문 PDF를 고릅니다(여러 개 가능).",
             "서식이 만들어져 서식 고르기의 각 분야 'PDF로 넣은 서식' 묶음에 들어갑니다. "
             "이름·동호수·연락처·날짜는 공문 쓸 때 넣는 칸이 됩니다.",
             "남은 개인정보가 없는지 처음 쓰기 전에 한 번 훑어보세요.")),
-        ("임대업무 기록하기", (
-            "바로가기 [임대업무 기록하기]에서 [임대담당자 자격검증 기록하기] 또는 [임대업무 일정표]를 고릅니다.",
+        ("임대담당자 자격검증 기록하기", (
+            "바로가기 [임대담당자 자격검증 기록하기]를 누릅니다.",
             "자격검증 기록: 갱신계약·주택정기·명의변경 주민등록 검증결과를 표로 적습니다. 칸을 두 번 누르거나 바로 글자를 치면 고치고, "
             "Enter·Tab으로 저장하며 옮겨 갑니다. [＋ 행 추가]·[행 삭제]로 줄을 늘리고 지웁니다.",
             "[⬇ 엑셀로 받기]로 엑셀 파일로 받고, 고친 엑셀은 [⬆ 엑셀 올려 적용]으로 다시 넣습니다(시트 이름·칸 제목은 바꾸지 마세요).",
             "기록한 차수·요청일·요청건수는 갱신계약·주택소유 정기검색 공문을 쓸 때 자동으로 들어갑니다.",
-            "임대업무 일정표: [➕ 업무 추가]로 할 일을 일반·매월·분기별·정해진 달로 넣고 달마다 체크합니다.")),
+            "할 일 체크(임대업무 일정표)는 왼쪽 메뉴 [나의 공문 작성]의 '나의 공문·업무 일정표'에서 합니다.")),
         ("품질평가서 작성", (
             "바로가기 [품질평가서 작성] → [품질평가 초안 작성]을 누릅니다([한글파일 작성]은 준비 중).",
             "[작년도 초안]에 작년 평가표, [품질평가 초안 작성]에 올해 평가표(빈 양식도 됨)를 [파일 넣기…]로 넣습니다.",
@@ -2893,7 +3235,7 @@ class App:
             "받는 동안 뜨는 작은 창의 [■ 그만 받기]를 누르면 지금 문서까지만 받고 멈춥니다.")),
         ("기록 폴더와 다른 PC로 옮기기", (
             "설정·서식·작성 이력·일정표·나의 공문은 KODAS.exe 옆 'KODAS 데이터' 폴더에 저장됩니다.",
-            "PC를 바꿀 때는 KODAS 폴더를 통째로 가져가면 그대로 씁니다. 홈넷·VPN 계정만 새 PC에서 다시 넣습니다.",
+            "PC를 바꿀 때는 KODAS 폴더를 통째로 가져가면 그대로 씁니다. 홈넷 계정만 새 PC에서 다시 넣습니다.",
             "담당자가 바뀌면 [파일 → 저장된 계정 지우기]를 누릅니다.")),
     )
 
@@ -3013,8 +3355,10 @@ class App:
     def _build_tab_design(self):
         """디자인 5가지 + 내 사진 디자인과 글씨체를 고르는 화면. 저장하면 다시 시작해 적용한다."""
         from tkinter import font as tkfont
-        tab = ttk.Frame(self.nb, padding=(18, 12))
-        self.nb.add(tab, text="  환경 설정  ")
+        outer = ttk.Frame(self.nb)
+        self.nb.add(outer, text="  환경 설정  ")
+        tab = ttk.Frame(self._scroll_area(outer), padding=(18, 12))   # 노트북처럼 화면이 작으면 마우스 휠로 내려 본다
+        tab.pack(fill="both", expand=True)
         saved = self.cfg.get("design") or {}
         self.design_name = tk.StringVar(value=ui_kit.DESIGN)
         have = set(tkfont.families(self.root))
@@ -3027,6 +3371,24 @@ class App:
         self.photo_new = False
         self._photo_thumb = None
 
+        # 내 데이터: 설정·서식·기록을 파일 하나로 내려받고, 다른 PC·새 KODAS에서 등록해 그대로 쓴다
+        ttk.Label(tab, text="내 데이터", font=(ui_kit.FONT, 13, "bold")).pack(anchor="w")
+        ttk.Label(tab, foreground=SUB, text="[내 데이터 내려받기]: 단지기본정보·환경 설정·서식(고친 서식 포함)·자격검증 기록·"
+                                             "나의공문·업무일정·품질평가 대장을 zip 파일 하나로 저장합니다.\n"
+                                             "[내 데이터 등록하기]: 내려받은 파일을 고르면 그 설정 그대로 KODAS가 다시 켜집니다"
+                                             "(지금 데이터는 먼저 백업). 다른 PC에서는 홈넷 비밀번호만 다시 넣어 주세요.\n"
+                                             "[데이터 초기화]: 단지기본정보를 포함한 모든 데이터를 지우고 처음 상태로 다시 시작합니다(먼저 내려받아 두세요).\n"
+                                             "자동 백업: 한 달마다 KODAS.exe 옆 'KODAS 자동백업' 폴더에 저장합니다(초기화해도 남음, 최근 12개). "
+                                             "되살릴 때는 [내 데이터 등록하기]에서 그 파일을 고르세요."
+                  ).pack(anchor="w", pady=(2, 8))
+        b2 = ttk.Frame(tab)
+        b2.pack(anchor="w")
+        ttk.Button(b2, text="내 데이터 내려받기", style="Accent.TButton", command=self._export_data).pack(side="left")
+        ttk.Button(b2, text="내 데이터 등록하기", style="Accent.TButton", command=self._import_data).pack(side="left", padx=8)
+        ttk.Style(self.root).configure("Danger.TButton", foreground="#c62828")
+        ttk.Button(b2, text="데이터 초기화", style="Danger.TButton", command=self._reset_data).pack(side="left", padx=(16, 0))
+        ttk.Button(b2, text="자동 백업 폴더 열기", command=self._open_auto_backup).pack(side="left", padx=(16, 0))
+        ttk.Separator(tab).pack(fill="x", pady=(14, 10))
         ttk.Label(tab, text="디자인", font=(ui_kit.FONT, 13, "bold")).pack(anchor="w")
         ttk.Label(tab, foreground=SUB, text="마음에 드는 디자인을 누르고 [저장하고 다시 시작]을 누르면 "
                                              "프로그램이 다시 켜지면서 바뀝니다. 작성 중인 내용은 저장해 두세요.\n"
@@ -3165,6 +3527,125 @@ class App:
             im.save(dst, "JPEG", quality=90)
         return dst
 
+    def _export_data(self):
+        import data_backup
+        self._save_settings()                  # 지금 화면의 설정까지 담는다
+        dst = filedialog.asksaveasfilename(
+            parent=self.root, title="내 데이터 내려받기", defaultextension=".zip",
+            initialdir=os.path.join(os.path.expanduser("~"), "Desktop"), initialfile=data_backup.default_name(),
+            filetypes=[("zip 파일", "*.zip")])
+        if not dst:
+            return
+        try:
+            n = data_backup.export_zip(dst)
+        except Exception as e:
+            messagebox.showerror("내 데이터 내려받기", f"저장하지 못했습니다.\n{e}", parent=self.root)
+            return
+        self.log(f"💾 내 데이터를 내려받았습니다: {dst} (파일 {n}개)")
+        messagebox.showinfo("내 데이터 내려받기", f"파일 {n}개를 저장했습니다.\n{dst}\n\n"
+                            "다른 PC나 새 KODAS의 [환경 설정 → 내 데이터 등록하기]에서 이 파일을 고르면 됩니다.",
+                            parent=self.root)
+
+    def _import_data(self):
+        import data_backup
+        src = filedialog.askopenfilename(parent=self.root, title="내 데이터 등록하기 — 내려받은 zip 고르기",
+                                         initialdir=os.path.join(os.path.expanduser("~"), "Desktop"),
+                                         filetypes=[("zip 파일", "*.zip"), ("모든 파일", "*.*")])
+        if not src:
+            return
+        try:
+            info = data_backup.check_zip(src)
+        except data_backup.DataError as e:
+            messagebox.showerror("내 데이터 등록하기", str(e), parent=self.root)
+            return
+        made = str(info.get("made", "")).replace("T", " ")
+        if not messagebox.askyesno("내 데이터 등록하기",
+                                   f"{os.path.basename(src)}\n(내려받은 때 {made or '알 수 없음'}, 파일 {len(info['names'])}개)\n\n"
+                                   "지금 KODAS의 설정·서식·기록을 이 파일 내용으로 바꾸고 다시 시작할까요?\n"
+                                   "지금 데이터는 '백업' 폴더에 먼저 남겨 둡니다.\n작성 중인 공문은 저장되지 않습니다.",
+                                   parent=self.root):
+            return
+        try:
+            n, backup = data_backup.import_zip(src)
+        except Exception as e:
+            messagebox.showerror("내 데이터 등록하기", f"등록하지 못했습니다.\n{e}", parent=self.root)
+            return
+        messagebox.showinfo("내 데이터 등록하기", f"파일 {n}개를 등록했습니다. KODAS를 다시 시작합니다.\n"
+                            f"(이전 데이터 백업: {backup})", parent=self.root)
+        self.root.destroy()                    # 설정을 다시 저장하지 않고 닫는다(등록한 설정을 덮지 않게)
+        self._relaunch()
+
+    def _reset_data(self):
+        """[환경 설정 → 데이터 초기화]: 안내 → 홈넷 비밀번호 확인 → KODAS 데이터를 모두 지우고 처음 상태로 다시 시작.
+        단지기본정보·환경 설정·계정·서식(고친 서식)·자격검증 기록·나의공문·업무일정·품질평가 대장·백업까지 지운다."""
+        import data_backup
+        title = "데이터 초기화"
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo(title, "소스로 실행할 때는 데이터 초기화를 하지 않습니다(exe에서만).", parent=self.root)
+            return
+        if not messagebox.askokcancel(
+                title,
+                "내 데이터 내려받기 후 초기화 진행하여 주시기 바랍니다.\n\n"
+                "초기화하면 아래 내용이 모두 지워지고, KODAS가 처음 설치한 상태로 다시 시작합니다.\n"
+                "  · 단지기본정보(관리소·단지·평형·계좌·업체·결재정보)와 홈넷 계정\n"
+                "  · 환경 설정(디자인)·고친 서식·PDF로 넣은 서식\n"
+                "  · 자격검증 기록·나의 공문·업무 일정표·품질평가 대장·작성 이력·백업\n\n"
+                "지운 데이터는 되돌릴 수 없습니다. [확인]을 누르면 홈넷 비밀번호를 확인합니다.",
+                icon="warning", parent=self.root):
+            return
+        saved = self.homnet_pw.get()
+        if saved:
+            pw = simpledialog.askstring(title, "본인 확인을 위해 홈넷 비밀번호를 넣어 주세요.", show="●",
+                                        parent=self.root)
+            if pw is None:
+                return
+            if pw != saved:
+                messagebox.showerror(title, "홈넷 비밀번호가 맞지 않습니다. 초기화하지 않았습니다.", parent=self.root)
+                return
+        elif not messagebox.askyesno(title, "저장된 홈넷 비밀번호가 없어 비밀번호 확인을 할 수 없습니다.\n"
+                                            "그래도 모든 데이터를 지우고 초기화할까요?", icon="warning",
+                                     parent=self.root):
+            return
+        if not messagebox.askyesno(title, "마지막 확인입니다.\nKODAS의 모든 데이터를 지우고 처음 상태로 다시 시작할까요?",
+                                   icon="warning", default="no", parent=self.root):
+            return
+        folder = paths.user_dir()
+        try:                                   # 열린 홈넷 브라우저가 기록 폴더 파일을 잡고 있으면 먼저 닫는다
+            if self.driver is not None:
+                self.driver.quit()
+        except Exception:
+            pass
+        self.driver = None
+        self.root.destroy()                    # 설정을 저장하지 않고 닫는다(보조 창이 닫히며 저장해도 아래에서 지운다)
+        left = data_backup.wipe(folder)
+        if left:                               # 잠깐 잡혀 있던 파일은 한 번 더
+            import time
+            time.sleep(1.5)
+            left = data_backup.wipe(folder)
+        if left:
+            try:
+                import tkinter.messagebox as mb
+                r = tk.Tk()
+                r.withdraw()
+                mb.showwarning(title, "일부 파일을 지우지 못했습니다(다른 프로그램이 쓰는 중):\n" + "\n".join(left[:10]),
+                               parent=r)
+                r.destroy()
+            except Exception:
+                pass
+        self._relaunch()
+
+    def _relaunch(self):
+        """KODAS를 새로 켠다(창은 먼저 닫아 둔다)."""
+        import subprocess
+        if getattr(sys, "frozen", False):
+            env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+            for k in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
+                      "_PYI_SPLASH_IPC"):
+                env.pop(k, None)
+            subprocess.Popen([sys.executable, "--restart"], cwd=paths.program_dir(), env=env)
+        else:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "--restart"], cwd=paths.program_dir())
+
     def _save_design(self):
         name, f = self.design_name.get(), self.design_font.get()
         design = {"name": name, "font": "" if f == self.FONT_DEFAULT else f}
@@ -3188,17 +3669,8 @@ class App:
             settings_store.set_value("design", design)
         except Exception:
             pass
-        import subprocess
-        if getattr(sys, "frozen", False):
-            # 새 exe는 자기 임시 폴더(_MEI)를 따로 풀어야 한다. 지금 exe의 임시 폴더를 물려받으면
-            # 이 창이 닫힐 때 그 폴더가 지워져 새 창에서 '_imagingft' 같은 모듈을 못 읽는다.
-            env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
-            for k in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
-                      "_PYI_SPLASH_IPC"):
-                env.pop(k, None)
-            subprocess.Popen([sys.executable, "--restart"], cwd=paths.program_dir(), env=env)
-        else:
-            subprocess.Popen([sys.executable, os.path.abspath(__file__), "--restart"], cwd=paths.program_dir())
+        # 새 exe는 자기 임시 폴더(_MEI)를 따로 풀어야 한다(_relaunch가 물려받은 환경을 지운다)
+        self._relaunch()
 
     def _on_close(self):
         if self.root.state() == "normal":       # 다음에 같은 크기·위치의 창으로 연다

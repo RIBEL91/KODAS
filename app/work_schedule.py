@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import calendar
+import datetime as dt
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import paths
 
 STORE_NAME = "업무일정.json"
 MYDOCS_NAME = "나의공문.json"     # [나의 공문 작성]: 내가 고른 서식 + 일정(같은 구조, 줄마다 'tpl' = 서식 파일)
+MYWORK_NAME = "나의업무일정.json"  # [나의 공문 작성 → 나의 업무 일정표]: 내 할 일(처음엔 빈 목록)
 KINDS = ("일반", "매월", "분기별", "정해진 달")
 
 
@@ -26,8 +29,78 @@ def store_path() -> str:
     return os.path.join(paths.data_dir(), STORE_NAME)
 
 
+def mywork_path() -> str:
+    return os.path.join(paths.data_dir(), MYWORK_NAME)
+
+
+# ---------------- 나의 일정표 목록(탭 여러 개) ----------------
+# [나의 공문 작성]에 사용자가 만든 일정표 탭들: [{"name": 탭 이름, "file": KODAS 데이터 안 파일 이름}]
+BOARDS_NAME = "나의일정표목록.json"
+
+
+def boards_path() -> str:
+    return os.path.join(paths.data_dir(), BOARDS_NAME)
+
+
+def board_file(entry: dict) -> str:
+    return os.path.join(paths.data_dir(), entry["file"])
+
+
+def load_boards() -> list[dict]:
+    """내가 만든 일정표 목록. 목록 파일이 없으면 '나의 업무 일정표' 하나(나의업무일정.json)."""
+    try:
+        with open(boards_path(), encoding="utf-8") as f:
+            raw = json.load(f)
+        out = [{"name": str(b["name"]).strip(), "file": os.path.basename(str(b["file"]))}
+               for b in raw.get("boards", []) if isinstance(b, dict) and b.get("name") and b.get("file")]
+        return out
+    except (OSError, ValueError, AttributeError, KeyError):
+        return [{"name": "나의 업무 일정표", "file": MYWORK_NAME}]
+
+
+def save_boards(boards: list[dict]) -> None:
+    path = boards_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"boards": boards}, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def new_board(name: str, boards: list[dict]) -> dict:
+    """새 일정표 항목(파일 이름은 겹치지 않게 만든다)."""
+    used = {b["file"] for b in boards}
+    while True:
+        fn = f"나의일정표_{uuid.uuid4().hex[:8]}.json"
+        if fn not in used and not os.path.exists(os.path.join(paths.data_dir(), fn)):
+            return {"name": name.strip(), "file": fn}
+
+
 def mydocs_path() -> str:
     return os.path.join(paths.data_dir(), MYDOCS_NAME)
+
+
+# ---------------- 나의 공문 + 임대업무 일정표 (한 목록) ----------------
+# 2026-11-26: 두 탭을 하나로 합쳤다. 공문 줄('tpl' 있음)은 [✎ 작성], 업무 줄은 체크만.
+MERGED_NAME = "나의공문일정.json"
+
+
+def merged_path() -> str:
+    return os.path.join(paths.data_dir(), MERGED_NAME)
+
+
+def merged_defaults() -> list[dict]:
+    """합친 파일이 처음 없을 때: 예전 나의공문.json 공문 + 업무일정.json 업무(없으면 기본 업무)를 한 목록으로.
+    예전 두 파일은 지우지 않고 그대로 둔다."""
+    docs = load(mydocs_path(), list)
+    work = load(store_path(), default_tasks)
+    seen = {t["id"] for t in docs}
+    out = docs + [t for t in work if t["id"] not in seen]
+    try:                                   # 바로 저장해 둔다(다시 읽을 때 기본 업무 id가 바뀌지 않게)
+        save(out, merged_path())
+    except OSError:
+        pass
+    return out
 
 
 def new_task(title: str, kind: str = "일반", months=None) -> dict:
@@ -84,6 +157,9 @@ def _norm(t) -> dict | None:
         out["months"] = sorted({int(m) for m in t.get("months") or [] if str(m).isdigit() and 1 <= int(m) <= 12})
     if t.get("tpl"):
         out["tpl"] = str(t["tpl"])
+    due = _norm_due(t.get("due"), kind)
+    if due is not None:
+        out["due"] = due
     return out
 
 
@@ -174,3 +250,116 @@ def move(tasks: list[dict], task: dict, step: int, kinds) -> bool:
     a, b = group[pos], group[other]
     tasks[a], tasks[b] = tasks[b], tasks[a]
     return True
+
+
+# ---------------- 기한(언제까지) ----------------
+# 'due': 일반 업무는 날짜 "2026-12-05", 매월·분기별·정해진 달은 그 달 며칠까지(1~31, 0 = 말일).
+DUE_SOON, DUE_NEAR, DUE_OVER = "soon", "near", "over"      # 7일 안·3일 안·지남
+DUE_COLORS = {DUE_SOON: "#c99700", DUE_NEAR: "#ee7a00", DUE_OVER: "#d93025"}   # 노랑·주황·빨강 글씨
+
+
+def _norm_due(v, kind):
+    if v in (None, ""):
+        return None
+    if kind == "일반":
+        try:
+            return dt.date.fromisoformat(str(v)).isoformat()
+        except ValueError:
+            return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 <= n <= 31 else None
+
+
+def parse_due(text: str, kind: str, today: dt.date | None = None):
+    """입력한 기한 글자 → 저장 값. 빈 글자 → None(기한 없음). 알아볼 수 없으면 ValueError.
+    일반: 2026-12-05 · 2026.12.5 · 12-5 · 12/5 · 12월 5일. 그 밖: 15 · 15일 · 말일."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    today = today or dt.date.today()
+    if kind != "일반":
+        if s in ("말일", "말", "0"):
+            return 0
+        m = re.fullmatch(r"(?:매월\s*)?(\d{1,2})\s*일?(?:까지)?", s)
+        if not m or not 1 <= int(m.group(1)) <= 31:
+            raise ValueError("며칠까지인지 1~31 사이 숫자나 '말일'로 넣어 주세요. 예: 15")
+        return int(m.group(1))
+    nums = [int(x) for x in re.findall(r"\d+", s)]
+    try:
+        if len(nums) == 3:
+            y = nums[0] + (2000 if nums[0] < 100 else 0)
+            d = dt.date(y, nums[1], nums[2])
+        elif len(nums) == 2:
+            d = dt.date(today.year, nums[0], nums[1])
+            if d < today - dt.timedelta(days=180):          # 1월에 12월 날짜를 넣으면 지난해가 아니라 다음 해
+                d = d.replace(year=today.year + 1)
+        else:
+            raise ValueError
+    except ValueError:
+        raise ValueError("날짜를 2026-12-05 또는 12-5처럼 넣어 주세요.") from None
+    return d.isoformat()
+
+
+def due_date(task: dict, year: int, month: int) -> dt.date | None:
+    """보는 달 기준 그 업무의 기한 날짜(없거나 그 달에 할 일이 아니면 None)."""
+    due = task.get("due")
+    if due is None:
+        return None
+    if task.get("kind") == "일반":
+        return dt.date.fromisoformat(due)
+    if current_slot(task, year, month) is None:
+        return None
+    last = calendar.monthrange(year, month)[1]
+    return dt.date(year, month, last if due == 0 else min(due, last))
+
+
+def due_label(task: dict) -> str:
+    due = task.get("due")
+    if due is None:
+        return ""
+    if task.get("kind") == "일반":
+        d = dt.date.fromisoformat(due)
+        return f"{d.month}/{d.day}까지"
+    return "말일까지" if due == 0 else f"{due}일까지"
+
+
+def urgency(d: dt.date | None, today: dt.date | None = None) -> str | None:
+    """기한이 지났으면 over, 3일 안이면 near, 7일 안이면 soon, 아니면 None."""
+    if d is None:
+        return None
+    left = (d - (today or dt.date.today())).days
+    if left < 0:
+        return DUE_OVER
+    if left <= 3:
+        return DUE_NEAR
+    if left <= 7:
+        return DUE_SOON
+    return None
+
+
+def all_board_paths() -> list[tuple[str, str]]:
+    """[(일정표 이름, 저장 파일)] — 나의 공문·업무 일정표 + 내가 만든 일정표."""
+    return [("나의 공문·업무 일정표", merged_path())] + [(b["name"], board_file(b)) for b in load_boards()]
+
+
+def month_due(today: dt.date | None = None) -> list[dict]:
+    """[홈 → 이달 작성해야 할 문서]: 기한을 넣은 것 중 아직 안 끝낸 이번 달(지난 일반 업무 포함) 일.
+    [{"title", "date", "urgency", "task", "board"}] 기한 빠른 순."""
+    today = today or dt.date.today()
+    last = dt.date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+    out = []
+    for name, path in all_board_paths():
+        if not os.path.exists(path):
+            continue
+        for t in load(path, list):
+            d = due_date(t, today.year, today.month)
+            key = current_slot(t, today.year, today.month)
+            if d is None or key is None or is_done(t, key) or d > last:
+                continue
+            out.append({"title": render(t["title"], today.year, today.month), "date": d,
+                        "urgency": urgency(d, today), "task": t, "board": name})
+    out.sort(key=lambda x: x["date"])
+    return out

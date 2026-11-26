@@ -29,10 +29,12 @@ class ScheduleBoard(tk.Frame):
     path: 저장 파일(None이면 임대업무 일정표 파일). defaults: 파일이 없을 때 처음 목록.
     word: '업무'·'공문' 같은 낱말(묶음 제목·안내에 쓴다).
     on_add(board) → 넣을 항목 목록(없으면 기본 [업무 추가] 창). on_open(task): [✎ 작성]을 누르면 부른다.
+    task_button: on_add가 있어도 [➕ 업무 추가] 버튼을 따로 둔다.
     """
 
     def __init__(self, master, k: float = 1.0, title: str = TITLE, path: str | None = None, defaults=None,
-                 word: str = "업무", add_text: str = "➕ 업무 추가", on_add=None, on_open=None, intro: str = ""):
+                 word: str = "업무", add_text: str = "➕ 업무 추가", on_add=None, on_open=None, intro: str = "",
+                 task_button: bool = False):
         super().__init__(master, background=ui_kit.PAGE)
         self.k, self.title_text, self.path, self.word = k, title, path, word
         self.on_add, self.on_open = on_add, on_open
@@ -47,13 +49,19 @@ class ScheduleBoard(tk.Frame):
         top = ttk.Frame(self, padding=(16, 12, 16, 4))
         top.pack(fill="x")
         ttk.Label(top, text=title, font=(F, 15, "bold")).pack(side="left")
-        ttk.Button(top, text=add_text, style="Accent.TButton", command=self._add).pack(side="right")
+        self.add_btn = ttk.Button(top, text=add_text, style="Accent.TButton", command=self._add)
+        self.add_btn.pack(side="right")
+        self.task_btn = None
+        if task_button and on_add:          # 공문 넣기 옆에 직접 쓰는 [업무 추가]도 둔다(나의 공문·업무 일정 한 목록)
+            self.task_btn = ttk.Button(top, text="➕ 업무 추가", command=self._add_task)
+            self.task_btn.pack(side="right", padx=(0, 6))
         if intro:
             ttk.Label(self, text=intro, foreground=ui_kit.SUB, padding=(16, 0, 16, 4),
                       wraplength=int(900 * k), justify="left").pack(fill="x")
 
         nav = ttk.Frame(self, padding=(16, 2, 16, 6))
         nav.pack(fill="x")
+        self.nav = nav                      # 튜토리얼이 가리키는 자리: add_btn·task_btn·nav·holder·due_links·open_links
         ttk.Button(nav, text="◀", width=3, command=lambda: self._move(-1)).pack(side="left")
         self.month_lbl = ttk.Label(nav, font=(F, 12, "bold"), width=12, anchor="center")
         self.month_lbl.pack(side="left", padx=6)
@@ -63,13 +71,17 @@ class ScheduleBoard(tk.Frame):
         self.sum_lbl = ttk.Label(nav, foreground=ui_kit.SUB)
         self.sum_lbl.pack(side="right")
 
-        tips = "체크하면 바로 저장됩니다 · 이름을 두 번 누르면 이름 고치기 · ▲▼ 순번 바꾸기 · ✕ 지우기"
+        tips = ("체크하면 완료할지 묻고 저장합니다 · 📅 기한 넣기(7일 전 노랑·3일 전 주황·지나면 빨강) · "
+                "이름을 두 번 누르면 이름 고치기 · ▲▼ 순번 · ✕ 지우기")
         if on_open:
             tips = "✎ 작성: 그 공문 쓰기 · " + tips
-        ttk.Label(self, text=tips, foreground=ui_kit.SUB, padding=(16, 0, 16, 6)).pack(fill="x")
+        ttk.Label(self, text=tips, foreground=ui_kit.SUB, padding=(16, 0, 16, 6), wraplength=int(900 * k),
+                  justify="left").pack(fill="x")
 
         holder = ttk.Frame(self, padding=(16, 0, 4, 12))
         holder.pack(fill="both", expand=True)
+        self.holder = holder
+        self.due_links, self.open_links, self.checks = [], [], []
         self.cv = tk.Canvas(holder, highlightthickness=0, background=ui_kit.CARD)
         sb = ttk.Scrollbar(holder, orient="vertical", command=self.cv.yview)
         self.cv.configure(yscrollcommand=sb.set)
@@ -119,6 +131,7 @@ class ScheduleBoard(tk.Frame):
         self.month_lbl.config(text=f"{self.year}년 {self.month}월")
         for w in self.body.winfo_children():
             w.destroy()
+        self.due_links, self.open_links, self.checks = [], [], []
         todo = done = 0
         for t in self.tasks:
             key = ws.current_slot(t, self.year, self.month)
@@ -170,8 +183,17 @@ class ScheduleBoard(tk.Frame):
         for sym, step in (("▼", 1), ("▲", -1)):             # 순번 바꾸기(같은 묶음 안에서 한 칸씩)
             self._link(row, sym, lambda s=step: self._move_task(t, s, kinds), bg)
         if self.on_open and t.get("tpl"):
-            self._link(row, "✎ 작성", lambda: self.on_open(t), bg, fg=ui_kit.PRIMARY, hover=ui_kit.PRIMARY_D,
-                       font=(F, 10, "bold"))
+            self.open_links.append(self._link(row, "✎ 작성", lambda: self.on_open(t), bg, fg=ui_kit.PRIMARY,
+                                              hover=ui_kit.PRIMARY_D, font=(F, 10, "bold")))
+        self.due_links.append(self._link(row, "📅 기한", lambda: self._set_due(t), bg))
+        if t.get("due") is not None:                 # 기한: 7일 안 노랑 · 3일 안 주황 · 지나면 빨강(끝냈으면 회색)
+            d = ws.due_date(t, self.year, self.month)
+            done_now = cur is not None and ws.is_done(t, cur)
+            lv = None if done_now else ws.urgency(d)
+            color = ui_kit.MUTED if done_now else ws.DUE_COLORS.get(lv, ui_kit.SUB)
+            text = ws.due_label(t) + (" · 지남" if lv == ws.DUE_OVER else "")
+            tk.Label(row, text=text, background=bg, foreground=color,
+                     font=(F, 10, "bold") if lv else (F, 10), padx=6).pack(side="right")
         if no:
             tk.Label(row, text=f"{no}.", background=bg, foreground=ui_kit.SUB, font=(F, 10), width=3,
                      anchor="e").pack(side="left")
@@ -182,9 +204,10 @@ class ScheduleBoard(tk.Frame):
             cb = tk.Checkbutton(row, text=text, variable=var, background=bg, activebackground=bg, anchor="w",
                                 font=(F, 11, "overstrike") if var.get() else (F, 11),
                                 foreground=ui_kit.MUTED if var.get() else ui_kit.TEXT,
-                                command=lambda: self._toggle(t, key, var.get()))
+                                command=lambda: self._toggle(t, key, var.get(), var))
             cb.pack(side="left", fill="x", expand=True, anchor="w")
             cb.bind("<Double-Button-1>", lambda _e: self._rename(t))
+            self.checks.append(cb)
             return
         lbl = tk.Label(row, text=ws.render(t["title"], self.year, self.month), background=bg,
                        foreground=ui_kit.TEXT, font=(F, 11, "bold"), anchor="w", padx=6)
@@ -201,7 +224,7 @@ class ScheduleBoard(tk.Frame):
             cb = tk.Checkbutton(boxes, text=label, variable=var, background=bg, activebackground=bg,
                                 font=(F, 10, "bold") if now else (F, 10),
                                 foreground=ui_kit.PRIMARY if now else ui_kit.TEXT,
-                                command=lambda k=key, v=var: self._toggle(t, k, v.get()))
+                                command=lambda k=key, v=var: self._toggle(t, k, v.get(), v))
             cb.pack(side="left", padx=(0, 8))
 
     # ---------------- 고치기 ----------------
@@ -211,7 +234,12 @@ class ScheduleBoard(tk.Frame):
         except OSError as e:
             messagebox.showerror(self.title_text, f"저장하지 못했습니다.\n{e}", parent=self)
 
-    def _toggle(self, t, key, on):
+    def _toggle(self, t, key, on, var=None):
+        if on and not messagebox.askyesno(
+                "완료", f"'{ws.render(t['title'], self.year, self.month)}'\n\n완료하실 건가요?", parent=self):
+            if var is not None:                      # 실수로 누른 것 → 체크를 되돌린다
+                var.set(False)
+            return
         ws.set_done(t, key, on)
         self._save()
         self.after_idle(self._redraw_keep)
@@ -236,6 +264,30 @@ class ScheduleBoard(tk.Frame):
         self._save()
         self._redraw_keep()
 
+    def _set_due(self, t):
+        if t["kind"] == "일반":
+            ask = "언제까지 해야 하나요?\n예: 2026-12-05 또는 12-5   (비우면 기한 없음)"
+            now = t.get("due") or ""
+        else:
+            ask = f"{t['kind']} 업무 — 그 달 며칠까지 해야 하나요?\n예: 15   ·   말일   (비우면 기한 없음)"
+            now = "" if t.get("due") is None else ("말일" if t["due"] == 0 else str(t["due"]))
+        while True:
+            text = simpledialog.askstring("기한 넣기", ask, initialvalue=now, parent=self)
+            if text is None:
+                return
+            try:
+                due = ws.parse_due(text, t["kind"])
+                break
+            except ValueError as e:
+                messagebox.showinfo("기한 넣기", str(e), parent=self)
+                now = text
+        if due is None:
+            t.pop("due", None)
+        else:
+            t["due"] = due
+        self._save()
+        self._redraw_keep()
+
     def _rename(self, t):
         name = simpledialog.askstring(self.title_text, "이름\n" + ws.TOKEN_HELP.replace(", {년", ",\n{년"),
                                       initialvalue=t["title"], parent=self)
@@ -257,6 +309,9 @@ class ScheduleBoard(tk.Frame):
         if self.on_add:
             self.add_tasks(self.on_add(self) or [])
             return
+        self._add_task()
+
+    def _add_task(self):
         dlg = AddTaskDialog(self, self.k)
         self.wait_window(dlg)
         if dlg.result:
@@ -264,7 +319,7 @@ class ScheduleBoard(tk.Frame):
 
 
 class ScheduleDialog(tk.Toplevel):
-    """[임대업무 기록하기 → 임대업무 일정표] 창."""
+    """임대업무 일정표 창(지금은 [나의 공문 작성] 탭을 쓴다)."""
 
     def __init__(self, master, k: float = 1.0):
         super().__init__(master)

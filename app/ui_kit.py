@@ -659,3 +659,181 @@ def open_path(p: str, parent=None) -> bool:
         pass
     messagebox.showerror("품질평가서 작성", f"열지 못했습니다.\n\n{p}\n\n{first}", parent=parent)
     return False
+
+
+class PeekEntry(ttk.Entry):
+    """비밀번호 칸: 평소에는 ●로 가리고, 글자를 칠 때 방금 친 한 글자만 잠깐 보여 준다(휴대폰처럼).
+    get()·insert()·delete()는 실제 글자로 동작한다(화면 글자 수 = 실제 글자 수)."""
+    MASK = "●"
+    PEEK_MS = 900
+    PASS_KEYS = {"Left", "Right", "Home", "End", "Tab", "ISO_Left_Tab", "Return", "KP_Enter", "Escape",
+                 "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Up", "Down"}
+
+    def __init__(self, master=None, **kw):
+        kw.pop("show", None)
+        super().__init__(master, **kw)
+        self._real = ""
+        self._job = None
+        self.bind("<KeyPress>", self._key)
+        self.bind("<<Paste>>", lambda _e: self._paste())
+        for seq in ("<<Cut>>", "<<Copy>>", "<<Clear>>"):          # 비밀번호는 복사·잘라내기 안 함
+            self.bind(seq, lambda _e: "break")
+
+    # ---- 실제 값 ----
+    def get(self):
+        return self._real
+
+    def _idx(self, index):
+        if index == "end":
+            return len(self._real)
+        if isinstance(index, int):
+            return max(0, min(index, len(self._real)))
+        return super().index(index)
+
+    def insert(self, index, string):
+        i = self._idx(index)
+        self._real = self._real[:i] + str(string) + self._real[i:]
+        self._render(cursor=i + len(str(string)))
+
+    def delete(self, first, last=None):
+        a = self._idx(first)
+        b = a + 1 if last is None else self._idx(last)
+        self._real = self._real[:a] + self._real[b:]
+        self._render(cursor=a)
+
+    # ---- 화면 ----
+    def _render(self, peek=None, cursor=None):
+        if self._job:
+            self.after_cancel(self._job)
+            self._job = None
+        text = self.MASK * len(self._real)
+        if peek is not None and 0 <= peek < len(self._real):
+            text = text[:peek] + self._real[peek] + text[peek + 1:]
+            self._job = self.after(self.PEEK_MS, self._render)
+        cur = super().index("insert") if cursor is None else cursor
+        super().delete(0, "end")
+        super().insert(0, text)
+        super().icursor(min(cur, len(text)))
+
+    def _sel(self):
+        try:
+            return super().index("sel.first"), super().index("sel.last")
+        except tk.TclError:
+            return None
+
+    def _key(self, e):
+        if e.keysym in self.PASS_KEYS:
+            return None
+        if e.state & 0x4:                                  # Ctrl: 붙여넣기만, 나머지(전체 선택 등)는 그대로
+            if e.keysym.lower() == "v":
+                return self._paste()
+            if e.keysym.lower() in ("x", "c"):
+                return "break"                             # 비밀번호는 복사·잘라내기 안 함
+            return None
+        sel = self._sel()
+        i = super().index("insert")
+        if e.keysym in ("BackSpace", "Delete"):
+            if sel:
+                self.delete(*sel)
+            elif e.keysym == "BackSpace" and i > 0:
+                self.delete(i - 1)
+            elif e.keysym == "Delete" and i < len(self._real):
+                self.delete(i)
+                super().icursor(i)
+            return "break"
+        if e.char and e.char.isprintable():
+            if sel:
+                self._real = self._real[:sel[0]] + self._real[sel[1]:]
+                i = sel[0]
+            self._real = self._real[:i] + e.char + self._real[i:]
+            self._render(peek=i, cursor=i + 1)
+            return "break"
+        return None
+
+    def _paste(self):
+        try:
+            s = self.clipboard_get()
+        except tk.TclError:
+            return "break"
+        s = s.replace("\r", "").replace("\n", "")
+        sel = self._sel()
+        if sel:
+            self.delete(*sel)
+        self.insert(super().index("insert"), s)
+        return "break"
+
+
+class BusyWindow(tk.Toplevel):
+    """공문 작성처럼 오래 걸리는 일 동안 KODAS 창 가운데 띄우는 '작업 중' 카드.
+    set(글자)로 지금 하는 일을 바꾸고, close()로 닫는다. 화면 조작을 막지는 않는다(브라우저 안내 창 등)."""
+
+    W, H = 420, 196
+
+    def __init__(self, master, title: str = "공문 작성 중", sub: str = ""):
+        super().__init__(master)
+        self.withdraw()
+        self.overrideredirect(True)
+        self.transient(master)
+        self.configure(background=BORDER)
+        card = tk.Frame(self, background=CARD)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+        top = tk.Frame(card, background=CARD)
+        top.pack(fill="x", padx=24, pady=(22, 6))
+        self.spin = tk.Canvas(top, width=34, height=34, background=CARD, highlightthickness=0)
+        self.spin.pack(side="left")
+        self.spin.create_oval(4, 4, 30, 30, outline=PRIMARY_SOFT, width=4)
+        self.arc = self.spin.create_arc(4, 4, 30, 30, start=90, extent=100, style="arc", outline=PRIMARY, width=4)
+        box = tk.Frame(top, background=CARD)
+        box.pack(side="left", padx=(14, 0))
+        tk.Label(box, text=title + "…", background=CARD, foreground=TEXT, font=(FONT, 14, "bold")).pack(anchor="w")
+        tk.Label(box, text=sub or "잠시만 기다려 주세요. 끝나면 이 창은 저절로 닫힙니다.", background=CARD,
+                 foreground=SUB, font=(FONT, 9)).pack(anchor="w")
+        bar = ttk.Progressbar(card, mode="indeterminate")
+        bar.pack(fill="x", padx=24, pady=(10, 8))
+        bar.start(12)
+        self.msg = tk.Label(card, text="준비 중…", background=CARD, foreground=SUB, font=(FONT, 9),
+                            anchor="w", justify="left", wraplength=self.W - 48)
+        self.msg.pack(fill="x", padx=24)
+        self.t0 = __import__("time").time()
+        self.clock = tk.Label(card, text="", background=CARD, foreground=MUTED, font=(FONT, 8), anchor="e")
+        self.clock.pack(fill="x", padx=24, pady=(4, 12))
+        self._angle = 90
+        self._job = None
+        self.place_center()
+        self.deiconify()
+        self.lift()
+        self._tick()
+
+    def place_center(self):
+        m = self.master
+        m.update_idletasks()
+        x = m.winfo_rootx() + max(0, (m.winfo_width() - self.W) // 2)
+        y = m.winfo_rooty() + max(0, (m.winfo_height() - self.H) // 2)
+        self.geometry(f"{self.W}x{self.H}+{x}+{y}")
+
+    def _tick(self):
+        try:
+            self._angle = (self._angle - 12) % 360
+            self.spin.itemconfigure(self.arc, start=self._angle)
+            sec = int(__import__("time").time() - self.t0)
+            self.clock.config(text=f"{sec // 60}분 {sec % 60:02d}초째" if sec >= 60 else f"{sec}초째")
+            self._job = self.after(40, self._tick)
+        except tk.TclError:
+            pass
+
+    def set(self, text: str):
+        try:
+            self.msg.config(text=ellipsize(str(text).strip(), 120))
+        except tk.TclError:
+            pass
+
+    def close(self):
+        if self._job:
+            try:
+                self.after_cancel(self._job)
+            except tk.TclError:
+                pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
