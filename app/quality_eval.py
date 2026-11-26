@@ -551,6 +551,81 @@ def make_folders(root: str, items: list[Item]) -> int:
     return made
 
 
+_VOL_RE = re.compile(r"([1-4])\s*권")
+
+
+def custom_item_dirs(user_root: str, items: list[Item], depth: int = 5) -> dict:
+    """[내가 만든 폴더링 적용하기]: 사람이 직접 만든 폴더링에서 항목마다 증빙 폴더를 찾는다.
+    폴더 이름이 번호(예: '1-1', '1-1 임대…', '4권 1-1')로 시작하면 그 번호 폴더로 보고, 그 안에
+    'k. …'(k번째 항목) 폴더가 있으면 항목 폴더로 쓴다. 'k.' 폴더가 없으면 번호 폴더 전체를 그 번호의 첫 항목에.
+    같은 번호가 여러 권에 있으면(1권 1-1, 4권 1-1) 위쪽 폴더 이름의 'N권'으로 가른다.
+    돌려주는 값: {(권, 번호, 순번): 폴더 경로}."""
+    if not user_root or not os.path.isdir(user_root):
+        return {}
+    user_root = os.path.abspath(user_root)
+    dirs = []                                  # (경로, 이름, 깊이)
+    for base, subs, _names in os.walk(user_root):
+        d = 0 if base == user_root else os.path.relpath(base, user_root).count(os.sep) + 1
+        if d >= depth:
+            subs[:] = []
+            continue
+        subs.sort()
+        dirs += [(os.path.join(base, s), s, d + 1) for s in subs]
+
+    def vols_in(path: str) -> set:
+        rel = os.path.relpath(path, os.path.dirname(user_root))
+        return {int(m) for m in _VOL_RE.findall(rel)}
+
+    out = {}
+    by_no: dict[tuple, list[Item]] = {}
+    for it in items:
+        by_no.setdefault((volume_of(it.part), it.no), []).append(it)
+    for (vol, no), its in by_no.items():
+        key = no or BONUS
+        pat = re.compile(rf"^(?:[1-4]\s*권\s*)?[\(\[]?\s*{re.escape(key)}(?![\d-])")
+        cands = [(p, dd) for p, n, dd in dirs if pat.match(n)]
+        if not cands:
+            continue
+
+        def score(c, vol=vol):
+            v = vols_in(c[0])
+            return (2 if vol in v else (-2 if v else 0), -c[1])
+        best = max(cands, key=score)
+        if score(best)[0] < 0:                 # 다른 권 폴더에만 있다
+            continue
+        nd = best[0]
+        seq_dirs = {}
+        for s in sorted(os.listdir(nd)):
+            m = re.match(r"^(\d+)\s*[.)]", s)
+            if m and os.path.isdir(os.path.join(nd, s)):
+                seq_dirs.setdefault(int(m.group(1)), os.path.join(nd, s))
+        ordered = sorted(its, key=lambda i: i.seq)
+        if seq_dirs:
+            for it in ordered:
+                if it.seq in seq_dirs:
+                    out[(vol, it.no, it.seq)] = seq_dirs[it.seq]
+        else:
+            out[(vol, ordered[0].no, ordered[0].seq)] = nd
+    return out
+
+
+def _files_in(d: str) -> list:
+    files = []
+    for base, _dirs, names in os.walk(d):
+        files += [os.path.join(base, n) for n in names if not n.startswith(("~$", "."))
+                  and n.lower() != "thumbs.db" and not n.endswith("(이유).txt")]
+    return sorted(files)
+
+
+def scan_custom(user_root: str, items: list[Item]) -> dict:
+    """내 폴더링으로 항목마다 evidence 목록을 채우고 {(권, 번호, 순번): 폴더}를 돌려준다."""
+    found = custom_item_dirs(user_root, items)
+    for it in items:
+        d = found.get((volume_of(it.part), it.no, it.seq))
+        it.evidence = _files_in(d) if d else []
+    return found
+
+
 def is_sheet(path: str) -> bool:
     """품질평가 평가표 엑셀인지 — 파일 이름과 상관없이 '항목별평가표' 시트가 있는지 본다(빨리: 압축 안의 목록만)."""
     import zipfile

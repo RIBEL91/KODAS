@@ -39,6 +39,8 @@ class ReportDialog(tk.Toplevel):
         self.running = False
         self.stop_ev = threading.Event()
         self.vols = {v: tk.BooleanVar(value=False) for v in qe.VOLUMES}
+        c = cfg.get("quality_custom_folder", "") if mode != "folder" else ""
+        self.custom_root = c if c and os.path.isdir(c) else ""     # [내가 만든 폴더링 적용하기]로 고른 폴더
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._close)
         p = path or cfg.get("quality_xlsx", "")      # [한글파일 만들기]로 오면 그 초안
@@ -133,6 +135,15 @@ class ReportDialog(tk.Toplevel):
         ttk.Button(row, text="새로 보기", command=self._refresh).pack(side="left")
         self.root_lbl = ttk.Label(vb, foreground=ui_kit.SUB, wraplength=int(540 * self.k), justify="left")
         self.root_lbl.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        if not self.folder_mode:                       # 직접 만들어 둔 폴더링으로 사진 넣기
+            mine = ttk.Frame(vb)
+            mine.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            ttk.Button(mine, text="📂 내가 만든 폴더링 적용하기…", command=self._pick_custom).pack(side="left")
+            self.custom_off = ttk.Button(mine, text="해제 (KODAS 폴더링 쓰기)", command=self._clear_custom)
+            self.custom_off.pack(side="left", padx=6)
+            self.custom_lbl = ttk.Label(vb, foreground=ui_kit.SUB, wraplength=int(540 * self.k), justify="left")
+            self.custom_lbl.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            self._show_custom()
 
         self.status = tk.Text(f, height=7, wrap="word", relief="flat", borderwidth=0, highlightthickness=1,
                               highlightbackground="#e0e0e0", font=(F, 9))
@@ -216,7 +227,75 @@ class ReportDialog(tk.Toplevel):
     def _evid_root(self) -> str:
         return qe.evidence_root(self.path) if self.path else ""
 
+    # ---------------- 내가 만든 폴더링 ----------------
+    def _pick_custom(self):
+        """직접 만들어 둔 폴더링 폴더를 고른다. 폴더 이름이 번호(1-1 …)로 시작하면 번호 폴더, 그 안의
+        '1. …' '2. …' 폴더가 항목 폴더. 거기 있는 파일이 한글파일 증빙 쪽에 사진으로 들어간다."""
+        from tkinter import filedialog
+        start = self.custom_root or (os.path.dirname(self.path) if self.path else os.path.expanduser("~\\Desktop"))
+        d = filedialog.askdirectory(parent=self, title="내가 만든 폴더링 폴더 고르기 (번호 폴더들이 들어 있는 폴더)",
+                                    initialdir=start, mustexist=True)
+        if not d:
+            return
+        d = os.path.normpath(d)
+        if not self.items:
+            messagebox.showinfo(TITLE, "먼저 [초안 넣기]로 초안 평가표를 넣어 주세요.\n"
+                                "초안의 번호(1-1 …)와 폴더 이름을 맞춰 사진을 넣습니다.", parent=self)
+            return
+        found = qe.scan_custom(d, self.items)
+        if not found:
+            messagebox.showwarning(TITLE, "이 폴더에서 번호 폴더를 찾지 못했습니다.\n\n"
+                                   "폴더 이름이 번호로 시작해야 합니다. 예)\n"
+                                   "  4권 임대운영 \\ 1-1 \\ 1. 임대차계약 \\ (파일들)\n"
+                                   "  1-2 입주자 관리 \\ (파일들)\n"
+                                   "같은 번호가 여러 권에 있으면 위 폴더 이름에 '1권'·'4권'처럼 권을 넣어 주세요.",
+                                   parent=self)
+            self._refresh()
+            return
+        self.custom_root = d
+        self.cfg["quality_custom_folder"] = d
+        self._refresh()
+        vols = sorted({k[0] for k in found})
+        for v in vols:                                  # 찾은 권은 체크
+            self.vols[v].set(True)
+        self._refresh()
+        files = sum(len(i.evidence) for i in self.items)
+        self.say(f"📂 내가 만든 폴더링 적용: {d}\n   항목 폴더 {len(found)}개 · 파일 {files}개 "
+                 f"({', '.join(qe.VOLUMES[v] for v in vols)})")
+        miss = [i.label for i in self.items if qe.volume_of(i.part) in vols
+                and (qe.volume_of(i.part), i.no, i.seq) not in found]
+        if miss:
+            self.say(f"   ⚠ 폴더를 못 찾은 항목 {len(miss)}개(증빙 없이 점수만): " + ", ".join(miss[:8])
+                     + (" …" if len(miss) > 8 else ""))
+
+    def _clear_custom(self):
+        self.custom_root = ""
+        self.cfg["quality_custom_folder"] = ""
+        self.say("내가 만든 폴더링을 해제했습니다. KODAS 폴더링(품질평가 작성\\폴더링)을 씁니다.")
+        self._refresh()
+
+    def _show_custom(self):
+        if not hasattr(self, "custom_lbl"):
+            return
+        if self.custom_root:
+            self.custom_lbl.config(text=f"✔ 내가 만든 폴더링을 씁니다: {self.custom_root}", foreground=ui_kit.TEXT)
+            self.custom_off.state(["!disabled"])
+        else:
+            self.custom_lbl.config(text="직접 폴더링해 둔 폴더가 있으면 골라 주세요. 폴더 이름의 번호(1-1, 2-3 …)로 "
+                                        "항목을 찾아 그 안의 파일을 사진으로 넣습니다.", foreground=ui_kit.SUB)
+            self.custom_off.state(["disabled"])
+
     def _refresh(self):
+        self._show_custom()
+        if self.custom_root:
+            found = qe.scan_custom(self.custom_root, self.items)
+            self.root_lbl.config(text=f"사진을 가져올 곳: 내가 만든 폴더링 (항목 폴더 {len(found)}개 찾음)")
+            for v, lbl in self.vol_info.items():
+                its = [i for i in self.items if qe.volume_of(i.part) == v]
+                got = sum((v, i.no, i.seq) in found for i in its)
+                lbl.config(text=f"항목 {len(its)}개 · 점수 {sum(i.score is not None for i in its)}개 · "
+                                f"폴더 찾음 {got}개 · 증빙 파일 {sum(len(i.evidence) for i in its)}개" if its else "")
+            return
         root = self._evid_root()
         self.root_lbl.config(text=f"폴더링: {root}  (4권: {qe.volume_dir(root, 4)})" if root
                              else "초안을 넣으면 그 폴더에 '품질평가 작성'을 만들어 폴더링(4권은 '폴더링 4권')과 한글파일을 넣습니다.")
@@ -444,6 +523,9 @@ class ReportDialog(tk.Toplevel):
             pass
 
     def _open_root(self, vol=None):
+        if self.custom_root and os.path.isdir(self.custom_root):
+            ui_kit.open_path(self.custom_root, self)
+            return
         root = self._evid_root()
         if not root:
             messagebox.showinfo(TITLE, "먼저 [초안 넣기]로 초안을 넣어 주세요.", parent=self)
@@ -477,6 +559,9 @@ class ReportDialog(tk.Toplevel):
         pws = self.passwords()
         self._start_busy()
         items, path = list(self.items), self.path
+        custom = self.custom_root if self.custom_root and os.path.isdir(self.custom_root) else ""
+        if custom:
+            self.say(f"📂 내가 만든 폴더링의 사진을 넣습니다: {custom}")
 
         def post(fn):
             try:
@@ -493,7 +578,7 @@ class ReportDialog(tk.Toplevel):
                 try:
                     out, res = hr.build(v, items, path, out_dir, year, center, chief,
                                         log=lambda m: post(lambda m=m: self.say("   " + m)), stop=self.stop_ev,
-                                        passwords=pws)
+                                        passwords=pws, custom_root=custom)
                     done.append((v, out, res))
                 except Exception as ex:
                     errs.append((v, ex))

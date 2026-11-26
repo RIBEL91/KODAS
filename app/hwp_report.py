@@ -65,12 +65,15 @@ def _caption(path: str, folder_title: str) -> str:
 
 
 def number_pages(root: str, items: list[qe.Item], tmp: str, passwords=(), hwp=None, log=None,
-                 res: dict | None = None) -> list[tuple[str, str]]:
+                 res: dict | None = None, custom: dict | None = None) -> list[tuple[str, str]]:
     """한 번호의 항목들(seq 순) 폴더의 증빙 파일 → (쪽 그림, 설명) 목록."""
     out = []
     for it in sorted(items, key=lambda i: i.seq):
-        d = qe.item_dir(root, it)
-        if not os.path.isdir(d):
+        if custom is not None:                 # 내가 만든 폴더링: 찾아 둔 항목 폴더
+            d = custom.get((qe.volume_of(it.part), it.no, it.seq), "")
+        else:
+            d = qe.item_dir(root, it)
+        if not d or not os.path.isdir(d):
             continue
         title = re.sub(r"^\d+\s*[.)]\s*", "", os.path.basename(d))
         files = []
@@ -535,8 +538,10 @@ def _best_proto(tabs: list, hw: Hwp):
 
 
 def build(vol: int, items: list[qe.Item], xlsx_path: str, out_dir: str, year: int, center: str,
-          chief: str = "", log=print, stop=None, template: str = "", passwords=()) -> tuple[str, dict]:
-    """vol권 보고서를 만들어 저장한 경로와 결과 요약을 돌려준다."""
+          chief: str = "", log=print, stop=None, template: str = "", passwords=(),
+          custom_root: str = "") -> tuple[str, dict]:
+    """vol권 보고서를 만들어 저장한 경로와 결과 요약을 돌려준다.
+    custom_root: 사람이 직접 만든 폴더링 폴더 — 있으면 KODAS 폴더링 대신 거기서 번호·항목 폴더를 찾아 사진을 넣는다."""
     say = log or (lambda _m: None)
     vitems = [i for i in items if qe.volume_of(i.part) == vol]
     by_no: dict[str, list[qe.Item]] = {}
@@ -559,14 +564,17 @@ def build(vol: int, items: list[qe.Item], xlsx_path: str, out_dir: str, year: in
             hw = Hwp(visible=False)
             # 1) 증빙 파일 → 쪽 그림 (양식을 열기 전에: 한글 파일 변환이 같은 한글을 쓴다)
             pages: dict[str, list] = {}
-            if root and os.path.isdir(qe.volume_dir(root, vol)):
+            custom = qe.custom_item_dirs(custom_root, vitems) if custom_root else None
+            if custom is not None:
+                say(f"내가 만든 폴더링({custom_root})에서 항목 폴더 {len(custom)}개를 찾았습니다.")
+            if custom or (custom is None and root and os.path.isdir(qe.volume_dir(root, vol))):
                 say("폴더링의 증빙 파일을 쪽 그림으로 바꿉니다…")
                 ptmp = os.path.join(tmp, "pages")
                 os.makedirs(ptmp)
                 for no, its in by_no.items():
                     if stop is not None and stop.is_set():
                         raise ReportError("멈췄습니다.")
-                    pages[no] = {it.seq: number_pages(root, [it], ptmp, passwords, hw, say, res)
+                    pages[no] = {it.seq: number_pages(root, [it], ptmp, passwords, hw, say, res, custom)
                                  for it in sorted(its, key=lambda i: i.seq)}
                     cnt = sum(len(v) for v in pages[no].values())
                     if cnt:

@@ -487,8 +487,7 @@ class App:
                                        on_more=lambda q: self._show_picker(query=q),
                                        todo=self._month_due, on_todo=self._open_due,
                                        on_todo_all=lambda: self._show_mydocs(tab=0),
-                                       on_check=lambda: messagebox.showinfo(
-                                           "품질평가 체크하기", "아직은 준비 중입니다.", parent=self.root))
+                                       on_check=self._quality_check)
         # 새 공문 작성(서식 고르기) 화면: 분야 탭 + 모든 분야에서 비슷한 공문 찾기
         self.picker = landing.Picker(self.main, self._pick_template, self._go_home, logo,
                                      all_items=lambda: list(enumerate(self.templates)), on_area=self._set_area)
@@ -1291,6 +1290,7 @@ class App:
                   "quality_prev_xlsx": self.cfg.get("quality_prev_xlsx", ""),
                   "quality_ledger_year": self.cfg.get("quality_ledger_year"),
                   "quality_my_items": self.cfg.get("quality_my_items", {}),
+                  "quality_custom_folder": self.cfg.get("quality_custom_folder", ""),   # 내가 만든 폴더링
                   "file_pws": self.cfg.get("file_pws", []),              # 품질평가 폴더링: 첨부 비밀번호(암호화)
                   "quality_chief": self.cfg.get("quality_chief", ""),    # 품질평가 한글파일: 소장명
                   "wise_complex": self.cfg.get("wise_complex", ""),      # 품질평가 WISE 캡처: 단지코드
@@ -2759,6 +2759,57 @@ class App:
     def _schedule(self):
         """[임대업무 일정표]: 나의 공문 작성 화면의 '나의 공문·업무 일정표' 탭을 연다(같은 목록을 두 곳에서 고치지 않게)."""
         self._show_mydocs(tab=0)
+
+    ADMIN_PW_SHA256 = "71317b8d10ebdc84abb38f9426269b71e441c145a8e710a9deb9f9da302fc867"   # 관리자 비밀번호(해시)
+
+    def _quality_check(self):
+        """홈 [품질평가 체크하기]: 아직 테스트 중 — '준비 중' 안내와 관리자 로그인 창.
+        관리자 비밀번호가 맞으면 이번 실행 동안 self.quality_admin = True (체크 기능은 만드는 중)."""
+        import hashlib
+        title = "품질평가 체크하기"
+        if getattr(self, "quality_admin", False):
+            messagebox.showinfo(title, "관리자로 로그인되어 있습니다.\n\n품질평가 체크하기는 아직 테스트 중입니다.",
+                                parent=self.root)
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.configure(padx=26, pady=20)
+        F = ui_kit.FONT
+        tk.Label(dlg, text=title, font=(F, 14, "bold"), fg=ui_kit.TEXT).pack(anchor="w")
+        tk.Label(dlg, text="아직은 준비 중입니다.", font=(F, 11), fg="#666").pack(anchor="w", pady=(4, 14))
+        box = ttk.LabelFrame(dlg, text=" 🔒 관리자 로그인 ", padding=(14, 10))
+        box.pack(fill="x")
+        tk.Label(box, text="테스트 중인 기능은 관리자만 들어갈 수 있습니다.", fg="#666").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(box, text="비밀번호").grid(row=1, column=0, sticky="w")
+        pw = ttk.Entry(box, width=20, show="●")
+        pw.grid(row=1, column=1, padx=8)
+        msg = tk.Label(box, text="", fg="#d93025")
+        msg.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        def login(_e=None):
+            if hashlib.sha256(pw.get().encode("utf-8")).hexdigest() != self.ADMIN_PW_SHA256:
+                msg.config(text="비밀번호가 맞지 않습니다.")
+                pw.delete(0, "end")
+                pw.focus_set()
+                return
+            self.quality_admin = True
+            dlg.destroy()
+            self.log("🔓 관리자로 로그인했습니다 (품질평가 체크하기 · 테스트 중).")
+            messagebox.showinfo(title, "관리자로 로그인했습니다.\n\n품질평가 체크하기는 아직 테스트 중입니다.",
+                                parent=self.root)
+        ttk.Button(box, text="로그인", style="Accent.TButton", command=login).grid(row=1, column=2)
+        pw.bind("<Return>", login)
+        ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(anchor="e", pady=(14, 0))
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dlg.winfo_reqwidth()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - dlg.winfo_reqheight()) // 3)
+        dlg.geometry(f"+{x}+{y}")
+        dlg.grab_set()
+        pw.focus_set()
 
     def _choice_menu(self, title: str, cards, arrows: bool = False, badge: str = ""):
         """둥근 카드 몇 개 중 하나를 고르는 작은 창. cards = ((제목, 설명, 할 일 또는 None=준비 중), …).

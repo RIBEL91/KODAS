@@ -73,3 +73,26 @@ def test_plan_and_find_doc():
     docs = {2026: [qd.Doc(seq=104, number="광주양림2관리소-104", title="계획 수립 안내", date=dt.date(2026, 1, 15)),
                    qd.Doc(seq=105, number="광주양림2관리소-105", title="다른 문서", date=dt.date(2026, 1, 15))]}
     assert ef.find_doc(docs, ref).number == "광주양림2관리소-104"
+
+
+def test_custom_foldering(tmp_path):
+    """내가 만든 폴더링: 번호 폴더(+ 'k.' 항목 폴더)를 찾아 증빙으로. 같은 번호는 'N권' 폴더로 가른다."""
+    def mk(*parts, files=("a.pdf",)):
+        d = tmp_path.joinpath(*parts)
+        d.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            (d / f).write_bytes(b"x")
+    mk("4권 임대운영", "1-1 임대차", "1. 계약서", files=("계약.pdf", "b.jpg"))
+    mk("4권 임대운영", "1-1 임대차", "2. 갱신")
+    mk("1권", "1-1")                                        # 1권 1-1: 항목 폴더 없이 번호 폴더에 바로
+    mk("4권 임대운영", "1-2")
+    its = [qe.Item(1, "임대운영", "", "", "1-1", 1, "계약"), qe.Item(2, "임대운영", "", "", "1-1", 2, "갱신"),
+           qe.Item(3, "유지관리", "", "", "1-1", 1, "시설"), qe.Item(4, "유지관리", "", "", "1-1", 2, "점검"),
+           qe.Item(5, "임대운영", "", "", "1-2", 1, "입주"), qe.Item(6, "임대운영", "", "", "1-3", 1, "없음")]
+    found = qe.scan_custom(str(tmp_path), its)
+    assert found[(4, "1-1", 1)].endswith("1. 계약서")
+    assert found[(4, "1-1", 2)].endswith("2. 갱신")
+    assert found[(1, "1-1", 1)].endswith("1-1") and "1권" in found[(1, "1-1", 1)]
+    assert (1, "1-1", 2) not in found                       # 번호 폴더는 첫 항목에만
+    assert (4, "1-3", 1) not in found
+    assert len(its[0].evidence) == 2 and len(its[4].evidence) == 1 and its[5].evidence == []
