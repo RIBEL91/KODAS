@@ -124,3 +124,16 @@ def test_month_due_lists_unfinished_tasks_with_due(tmp_path, monkeypatch):
     assert [(x["title"], x["date"]) for x in got] == [("한 번 할 일", dt.date(2026, 2, 1)),
                                                        ("2월 정기검색", dt.date(2026, 2, 28))]
     assert got[0]["urgency"] == ws.DUE_OVER and got[1]["urgency"] is None
+
+
+def test_release_starts_clean(tmp_path, monkeypatch):
+    """배포판을 새 폴더에서 처음 켜면 기록이 하나도 없어야 한다(기본 업무·관계철 엑셀 자동 가져오기 없음)."""
+    import paths
+    import verify_log as vl
+    monkeypatch.setattr(paths, "data_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(paths, "user_dir", lambda: str(tmp_path))
+    assert ws.load(ws.merged_path(), ws.merged_defaults) == []
+    assert ws.load_boards() == []
+    assert ws.month_due() == []
+    assert vl.default_book() == ""
+    assert all(rows == [] for rows in vl.store_load().values())

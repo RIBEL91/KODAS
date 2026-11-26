@@ -169,12 +169,9 @@ def month_choices(today: dt.date | None = None, current: str = "") -> list[str]:
 
 
 def default_book() -> str:
-    """바탕화면의 '주택전산검색 관계철.xlsx'(있으면)."""
-    import paths
-    if paths.was_reset():                    # 데이터 초기화 뒤에는 빈 기록으로 시작
-        return ""
-    p = os.path.join(os.path.expanduser("~"), "Desktop", DEFAULT_NAME)
-    return p if os.path.exists(p) else ""
+    """처음 켤 때 자동으로 가져올 관계철 엑셀 — 쓰지 않는다(2026-11-26: 배포판은 언제나 빈 기록으로 시작).
+    예전 기록은 [⬆ 엑셀 올려 적용]으로 직접 넣는다."""
+    return ""
 
 
 # ---------------- 값 바꾸기 ----------------

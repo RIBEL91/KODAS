@@ -25,7 +25,7 @@ import roster
 import settings_store
 import ui_kit
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 FONT = (ui_kit.FONT, 10)
 FONT_B = (ui_kit.FONT, 10, "bold")
 # 수신자 엑셀 업로드 칸: 눈에 띄게 주황 테두리·연한 바탕
@@ -2845,7 +2845,6 @@ class App:
         """[품질평가서 작성]: ① 초안 작성 / ② 폴더링 / ③ 한글파일 작성 중 고른다
         (2026-11-26: 따로 만든 '품질평가서 작성기'의 기능을 KODAS로 합침 — 같은 창·같은 순서).
         modal=False: 튜토리얼이 열 때(튜토리얼 버튼을 누를 수 있게)."""
-        self._import_quality_app()
         return self._choice_menu("품질평가서 작성", (
             ("① 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안", self._quality_eval),
             ("② 폴더링", "번호별 증빙을 대장에서 받아\n항목 폴더에 그림으로", self._quality_folder),
