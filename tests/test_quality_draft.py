@@ -197,3 +197,27 @@ def test_incremental_current_year(tmp_path, monkeypatch):
     assert [d.number for d in got[today.year]] == ["광주양림2관리소-11", "광주양림2관리소-10"]
     saved = json.loads((tmp_path / f"{today.year}.json").read_text("utf-8"))
     assert saved["date"] == today.isoformat() and len(saved["docs"]) == 2
+
+
+def test_split_rows_30(tmp_path):
+    from PIL import Image
+    import evidence_fetch as ef
+    rows = [[0, 20]] + [[20 + 10 * i, 30 + 10 * i] for i in range(83)]
+    src = tmp_path / "t.png"
+    Image.new("RGB", (100, 850), "white").save(src)
+    out = ef.split_rows(str(src), str(tmp_path / "목록.png"), rows, 30)
+    assert [p.rsplit(" - ", 1)[1] for p in out] == ["1.png", "2.png", "3.png"]
+    assert Image.open(out[0]).height == 20 + 301 and Image.open(out[2]).height == 20 + 230
+    assert not src.exists()
+
+
+def test_split_rows_date_inset(tmp_path):
+    from PIL import Image
+    import evidence_fetch as ef
+    rows = [[0, 20]] + [[20 + 10 * i, 30 + 10 * i] for i in range(5)]
+    src = tmp_path / "t.png"
+    Image.new("RGB", (800, 70), "white").save(src)
+    out = ef.split_rows(str(src), str(tmp_path / "목록.png"), rows, 30,
+                        [f"2026/0{i + 1}/01 10:00" for i in range(5)], [200, 320])
+    im = Image.open(out[0])
+    assert len(out) == 1 and im.height > 70 and im.getpixel((205, 7)) == (0, 0, 0)

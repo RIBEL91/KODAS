@@ -740,7 +740,7 @@ def doc_numbers(text: str) -> tuple:
 
 
 def open_first_doc(driver, keyword: str, log, after_title: str = "", year: int | None = None,
-                   password: str = "", start_row: int = 0, page: int = 1) -> str:
+                   password: str = "", start_row: int = 0, page: int = 1, search_type: str = "title") -> str:
     """기록물등록대장을 열어(검색어가 있으면 제목 검색) 맨 위 문서를 연다. 문서 창 핸들을 돌려준다.
     after_title을 주면 그 제목 줄의 다음 줄 문서를 연다('조회' 화면에 [다음]이 없을 때 이어 가기).
     year를 주면 그 해 대장(생산연도)에서 연다. 비우면 홈넷 기본(올해).
@@ -763,8 +763,8 @@ def open_first_doc(driver, keyword: str, log, after_title: str = "", year: int |
             driver.switch_to.default_content()
             raise CollectError(str(ex)) from None
     if keyword.strip():
-        log(f"  제목 검색: {keyword.strip()}")
-        ledger.search_register(driver, keyword.strip())
+        log(f"  {'등록번호' if search_type == 'docnum' else '제목'} 검색: {keyword.strip()}")
+        ledger.search_register(driver, keyword.strip(), search_type)
     end = time.time() + 20
     while time.time() < end:
         time.sleep(1)

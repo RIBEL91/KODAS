@@ -158,11 +158,13 @@ def go_page(driver, page: int, words: str = "") -> list[dict]:
     return list_rows(driver)
 
 
-def search_register(driver, words: str) -> None:
-    """기록물등록대장 목록을 제목으로 검색한다(open_register 뒤, contentview 안에서)."""
-    driver.execute_script("document.getElementById('searchType').value = 'title';"
+def search_register(driver, words: str, kind: str = "title") -> None:
+    """기록물등록대장 목록을 검색한다(open_register 뒤, contentview 안에서).
+    kind: 'title'(문서제목) · 'docnum'(등록번호 — 번호만, 예: '264') · 'charger' · 'receipient' · 'keyword'.
+    (품질평가 폴더링이 등록번호로 찾는다 — 제목 검색은 괄호 때문에 빗나감)"""
+    driver.execute_script("document.getElementById('searchType').value = arguments[1];"
                           "document.getElementById('editSearchCondition').value = arguments[0]; DoSearch();",
-                          words)
+                          words, kind)
 
 
 def _search_pick(driver, words_list, pick, wait=12):

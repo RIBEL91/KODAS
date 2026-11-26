@@ -146,6 +146,8 @@ def test_work_dir(tmp_path):
     assert qe.work_dir(p) == work
     assert qe.evidence_root(p) == os.path.join(work, "폴더링")              # 폴더링은 '품질평가 작성' 안에
     assert qe.volume_dir(qe.evidence_root(p), 4) == os.path.join(work, "폴더링 4권")
+    import hwp_report as hr
+    assert hr.default_out_dir(p) == work and os.path.isdir(work)            # 한글파일도 같은 곳
 
 
 def test_work_dir_no_nesting(tmp_path):

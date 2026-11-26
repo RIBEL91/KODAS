@@ -1291,6 +1291,11 @@ class App:
                   "quality_prev_xlsx": self.cfg.get("quality_prev_xlsx", ""),
                   "quality_ledger_year": self.cfg.get("quality_ledger_year"),
                   "quality_my_items": self.cfg.get("quality_my_items", {}),
+                  "file_pws": self.cfg.get("file_pws", []),              # 품질평가 폴더링: 첨부 비밀번호(암호화)
+                  "quality_chief": self.cfg.get("quality_chief", ""),    # 품질평가 한글파일: 소장명
+                  "wise_complex": self.cfg.get("wise_complex", ""),      # 품질평가 WISE 캡처: 단지코드
+                  "wise_basic_complexes": self.cfg.get("wise_basic_complexes"),
+                  "quality_app_imported": self.cfg.get("quality_app_imported", False),   # 품질평가서 작성기 설정 가져옴
                   "call_days": self.cfg.get("call_days", 10),             # 자격검증 기록: 소명기간(일)
                   "wise_region": self.cfg.get("wise_region", ""),        # 원터치 자동작성의 WISE 지역본부   # 담당자별 [내 항목 고르기]
                   "quality_extra_xlsx_list": self.cfg.get("quality_extra_xlsx_list")
@@ -2671,50 +2676,177 @@ class App:
 
     # ================= 대장 문서 모으기 =================
     def _quality_menu(self):
-        """[품질평가서 작성]: 품질평가 초안 작성 / 한글파일 작성 중 고른다."""
+        """[품질평가서 작성]: ① 초안 작성 / ② 폴더링 / ③ 한글파일 작성 중 고른다
+        (2026-11-26: 따로 만든 '품질평가서 작성기'의 기능을 KODAS로 합침 — 같은 창·같은 순서)."""
+        self._import_quality_app()
         self._choice_menu("품질평가서 작성", (
-            ("품질평가 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안, 증빙 폴더", self._quality_eval),
-            ("한글파일 작성", "준비 중입니다", None)))
+            ("① 초안 작성", "평가표 점수·근거 입력,\n대장 참고 초안", self._quality_eval),
+            ("② 폴더링", "번호별 증빙을 대장에서 받아\n항목 폴더에 그림으로", self._quality_folder),
+            ("③ 한글파일 작성", "1~4권 보고서에\n점수·증빙 사진 넣기", self._quality_report)),
+            arrows=True, badge="테스트중")
+
+    QUALITY_APP_KEYS = ("quality_xlsx", "quality_prev_xlsx", "quality_ledger_year", "quality_extra_xlsx_list",
+                        "quality_my_items", "file_pws", "quality_chief", "wise_complex", "wise_basic_complexes")
+
+    def _import_quality_app(self):
+        """처음 한 번: 따로 쓰던 품질평가서 작성기(%APPDATA%\\품질평가서작성)의 품질평가 설정
+        (평가표 경로·첨부 비밀번호·소장명·WISE 단지코드 등)과 대장 목록 캐시를 KODAS로 가져온다.
+        홈넷 계정·단지 정보는 KODAS 것을 그대로 쓴다. 원본은 지우지 않는다."""
+        if self.cfg.get("quality_app_imported"):
+            return
+        self.cfg["quality_app_imported"] = True
+        src = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "품질평가서작성")
+        if not os.path.isdir(src):
+            return
+        n = 0
+        try:
+            import json
+            with open(os.path.join(src, "settings.json"), encoding="utf-8") as f:
+                old = json.load(f)
+            for k in self.QUALITY_APP_KEYS:
+                if old.get(k) not in (None, "", [], {}):
+                    self.cfg[k] = old[k]
+                    n += 1
+        except (OSError, ValueError):
+            pass
+        import shutil
+        for sub in ("품질평가_대장", "품질평가_백업"):            # 대장 목록 캐시(수신자 포함 새 형식)·평가표 백업
+            s, d = os.path.join(src, sub), os.path.join(paths.user_dir(), sub)
+            if not os.path.isdir(s):
+                continue
+            os.makedirs(d, exist_ok=True)
+            for name in os.listdir(s):
+                a, b = os.path.join(s, name), os.path.join(d, name)
+                try:
+                    if os.path.isfile(a) and (not os.path.exists(b) or os.path.getmtime(a) > os.path.getmtime(b)):
+                        shutil.copy2(a, b)
+                except OSError:
+                    pass
+        self._save_settings()
+        self.log(f"📥 품질평가서 작성기의 설정 {n}개와 대장 목록을 KODAS로 가져왔습니다.")
+
+    def _quality_window(self, make):
+        """품질평가 창은 한 번에 하나만(초안·폴더링·한글파일). 열려 있으면 그 창을 앞으로."""
+        win = getattr(self, "_quality_win", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            return
+        self._quality_win = win = make()
+        win.bind("<Destroy>", lambda e: self._save_settings() if e.widget is win else None)
+
+    def _quality_eval(self):
+        """① 초안 작성: 평가표 엑셀 점수·근거 입력(대장 참고 초안). [다음]으로 폴더링 창을 연다."""
+        import quality_view
+        self._quality_window(lambda: quality_view.QualityDialog(
+            self.root, self.cfg, self.k, self.log, homnet_run=self._quality_homnet,
+            on_report=lambda p: self.root.after(10, lambda: self._quality_folder(p))))
+
+    def _quality_folder(self, path: str = ""):
+        """② 폴더링: 번호별 증빙을 대장에서 받아 항목 폴더에 그림으로. [다음]으로 한글파일 작성 창을 연다."""
+        import report_view
+        self._quality_window(lambda: report_view.ReportDialog(
+            self.root, self.cfg, self.k, self.log, homnet_run=self._quality_homnet, path=path, mode="folder",
+            on_next=lambda p: self.root.after(10, lambda: self._quality_report(p))))
+
+    def _quality_report(self, path: str = ""):
+        """③ 한글파일 작성: 1~4권 양식에 점수·점검결과·폴더링 사진을 넣은 보고서."""
+        import report_view
+        self._quality_window(lambda: report_view.ReportDialog(
+            self.root, self.cfg, self.k, self.log, homnet_run=self._quality_homnet, path=path))
 
     def _schedule(self):
         """[임대업무 일정표]: 나의 공문 작성 화면의 '나의 공문·업무 일정표' 탭을 연다(같은 목록을 두 곳에서 고치지 않게)."""
         self._show_mydocs(tab=0)
 
-    def _choice_menu(self, title: str, cards):
-        """주황 카드 몇 개 중 하나를 고르는 작은 창. cards = ((제목, 설명, 할 일 또는 None=준비 중), …)."""
+    def _choice_menu(self, title: str, cards, arrows: bool = False, badge: str = ""):
+        """둥근 카드 몇 개 중 하나를 고르는 작은 창. cards = ((제목, 설명, 할 일 또는 None=준비 중), …).
+        arrows=True면 카드 사이에 순서 화살표(→), badge가 있으면 제목 옆에 둥근 표시(예: 테스트중)."""
+        import tkinter.font as tkfont
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
         dlg.transient(self.root)
         dlg.resizable(False, False)
         dlg.configure(padx=26, pady=20)
-        ttk.Label(dlg, text=title, font=(ui_kit.FONT, 14, "bold")).pack(anchor="w")
-        ttk.Label(dlg, text="무엇을 할지 골라 주세요.", foreground="#666").pack(anchor="w", pady=(2, 14))
-        row = ttk.Frame(dlg)
+        bg = dlg.cget("bg")
+        k = self.k
+        F = ui_kit.FONT
+
+        head = tk.Frame(dlg, bg=bg)
+        head.pack(anchor="w")
+        tk.Label(head, text=title, font=(F, 14, "bold"), bg=bg, fg=ui_kit.TEXT).pack(side="left")
+        if badge:                                          # 제목 옆 둥근 표시
+            bf = tkfont.Font(family=F, size=9, weight="bold")
+            bw, bh = int(bf.measure(badge) + 22 * k), int(22 * k)
+            P = ui_kit.Painter(bw, bh, bg)
+            P.rrect(0, 0, bw, bh, bh / 2, ui_kit.TINTS["amber"][0], outline="#f3c56b")
+            cv = tk.Canvas(head, width=bw, height=bh, bg=bg, highlightthickness=0)
+            cv.pack(side="left", padx=(10, 0), pady=(3, 0))
+            img = P.finish()
+            cv.create_image(0, 0, anchor="nw", image=img)
+            cv.create_text(bw / 2, bh / 2, text=badge, font=bf, fill=ui_kit.TINTS["amber"][1])
+            cv.img = img
+        tk.Label(dlg, text="무엇을 할지 골라 주세요." + ("  (왼쪽부터 순서대로 진행합니다)" if arrows else ""),
+                 fg="#666", bg=bg).pack(anchor="w", pady=(2, 14))
+        row = tk.Frame(dlg, bg=bg)
         row.pack()
 
-        def card(title, sub, cmd, enabled=True):
-            box = tk.Frame(row, bg=ORANGE if enabled else "#c9c9c9", cursor="hand2" if enabled else "",
-                           padx=22, pady=16)
-            box.pack(side="left", padx=8, fill="y")
-            labels = [tk.Label(box, text=title, bg=box["bg"], fg="white", font=(ui_kit.FONT, 13, "bold")),
-                      tk.Label(box, text=sub, bg=box["bg"], fg="white", font=(ui_kit.FONT, 9), justify="left")]
-            for w in labels:
-                w.pack(anchor="w")
+        # 카드 크기: 가장 긴 글자에 맞춰 모두 같게
+        f_t = tkfont.Font(family=F, size=13, weight="bold")
+        f_s = tkfont.Font(family=F, size=9)
+        pad, gap = 20 * k, 6 * k
+        tw = max(max(f_t.measure(t), *(f_s.measure(x) for x in s.split("\n"))) for t, s, _c in cards)
+        lines = max(len(s.split("\n")) for _t, s, _c in cards)
+        cw = int(tw + pad * 2)
+        ch = int(pad * 2 + f_t.metrics("linespace") + gap + f_s.metrics("linespace") * lines)
+        m = int(14 * k)                                    # 그림자가 번질 여백(사방) — 좁으면 그림자가 네모나게 잘린다
+        R = 16 * k
+
+        def face(color):
+            P = ui_kit.Painter(cw + m * 2, ch + m * 2, bg)
+            P.shadow(m + 6 * k, m + 6 * k, m + cw - 6 * k, m + ch, R, alpha=30, dy=4, color=color)
+            P.rrect(m, m, m + cw, m + ch, R, color)
+            return P.finish()
+
+        def arrow():
+            aw, ah = int(30 * k), ch + m * 2
+            P = ui_kit.Painter(aw, ah, bg)
+            cy, c = m + ch / 2, ui_kit.mix(ORANGE, bg, 0.35)
+            P.line([(6 * k, cy), (aw - 12 * k, cy)], c, max(2, round(3 * k)))
+            P.polygon([(aw - 16 * k, cy - 8 * k), (aw - 4 * k, cy), (aw - 16 * k, cy + 8 * k)], c)
+            cv = tk.Canvas(row, width=aw, height=ah, bg=bg, highlightthickness=0)
+            cv.pack(side="left")
+            img = P.finish()
+            cv.create_image(0, 0, anchor="nw", image=img)
+            cv.img = img
+
+        def card(c_title, c_sub, cmd):
+            enabled = cmd is not None
+            base = ORANGE if enabled else "#c9c9c9"
+            imgs = (face(base), face(ACCENT) if enabled else None)
+            cv = tk.Canvas(row, width=cw + m * 2, height=ch + m * 2, bg=bg, highlightthickness=0,
+                           cursor="hand2" if enabled else "")
+            cv.pack(side="left")
+            pic = cv.create_image(0, 0, anchor="nw", image=imgs[0])
+            cv.create_text(m + pad, m + pad, anchor="nw", text=c_title, font=f_t, fill="white")
+            cv.create_text(m + pad, m + pad + f_t.metrics("linespace") + gap, anchor="nw", text=c_sub, font=f_s,
+                           fill="white", justify="left")
+            cv.imgs = imgs
             if not enabled:
                 return
+
             def go(_e=None):
                 dlg.destroy()
                 cmd()
-            def hover(on):
-                for w in [box] + labels:
-                    w.config(bg=ACCENT if on else ORANGE)
-            for w in [box] + labels:
-                w.bind("<Button-1>", go)
-                w.bind("<Enter>", lambda _e: hover(True))
-                w.bind("<Leave>", lambda _e: hover(False))
+            cv.bind("<Button-1>", go)
+            cv.bind("<Enter>", lambda _e: cv.itemconfigure(pic, image=imgs[1]))
+            cv.bind("<Leave>", lambda _e: cv.itemconfigure(pic, image=imgs[0]))
 
-        for c_title, c_sub, c_cmd in cards:
-            card(c_title, c_sub, c_cmd, enabled=c_cmd is not None)
+        for n, (c_title, c_sub, c_cmd) in enumerate(cards):
+            if arrows and n:
+                arrow()
+            card(c_title, c_sub, c_cmd)
         ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(anchor="e", pady=(16, 0))
         dlg.update_idletasks()
         x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dlg.winfo_reqwidth()) // 2)
@@ -2740,20 +2872,6 @@ class App:
                 if getattr(self, "record_label", None) is not None:
                     self._load_verify_book()
         self._verify_win.bind("<Destroy>", closed)
-
-    def _quality_eval(self):
-        """바로가기 [품질평가서 작성]: 평가표 엑셀 점수·근거 입력과 항목별 증빙 폴더."""
-        import quality_view
-        win = getattr(self, "_quality_win", None)
-        if win is not None and win.winfo_exists():
-            win.deiconify()
-            win.lift()
-            win.focus_force()
-            return
-        self._quality_win = quality_view.QualityDialog(self.root, self.cfg, self.k, self.log,
-                                                       homnet_run=self._quality_homnet)
-        self._quality_win.bind("<Destroy>", lambda e: self._save_settings() if e.widget is self._quality_win
-                               else None)
 
     def _quality_homnet(self, job, on_ok, on_err):
         """품질평가 초안: 홈넷에 로그인(필요하면 VPN 먼저)한 뒤 job(driver, log)를 작업 스레드에서 돌린다."""
